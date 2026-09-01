@@ -1,0 +1,27 @@
+{
+  "name": "@sirantd/linkedin-org-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Manage a company LinkedIn Page from Paperclip — post, react and comment as the organization.",
+  "files": ["dist/", "migrations/", "README.md"],
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "^2026.720.0",
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "peerDependencies": {
+    "@paperclipai/plugin-sdk": "^2026.720.0"
+  }
+}
