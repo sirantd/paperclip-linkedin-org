@@ -19,7 +19,7 @@
     "@types/node": "^24.6.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@paperclipai/plugin-sdk": "^2026.720.0"
