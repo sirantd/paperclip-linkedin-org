@@ -101,7 +101,7 @@ export function refreshTokens(
 export function assertOrgScopesGranted(tokens: LinkedInTokens): void {
   if (!tokens.scope) return; // Nothing to check against; publish will surface it.
   const granted = new Set(tokens.scope.split(/[\s,]+/).filter(Boolean));
-  const missing = ["w_organization_social", "rw_organization_admin"].filter(
+  const missing = ["w_organization_social", "w_organization_social_feed", "rw_organization_admin"].filter(
     (s) => !granted.has(s),
   );
   if (missing.length > 0) {

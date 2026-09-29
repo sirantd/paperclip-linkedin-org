@@ -68,8 +68,20 @@ npm install && npm run typecheck && npm run build
 
 ## Status
 
-Scaffold — typechecks and builds; **not yet exercised against the live
-LinkedIn API**. Unverified against real traffic: the `x-restli-id` post-URN
-header, the `/rest/organizations?ids=List(...)` batch projection, and the
-comment endpoint path. Expect to adjust these on first live connect.
+Live-tested 2026-09-29 against two connected Pages (PER-2499):
+
+- **Token refresh: verified.** Forcing `expires_at` to now+1 min and then calling a
+  tool refreshed both Pages. `last_refreshed_at` was set, the new expiry is +60 days,
+  and the status stayed `active`. Refresh is lazy: it runs only inside a tool call
+  within 5 min of expiry. Nothing refreshes on a schedule.
+- **Post: verified.** `linkedin-page-post` published to AWS User Group Gold Coast.
+  The `x-restli-id` header returned `urn:li:share:…` as expected.
+- **Reactions / comments: need the `*_social_feed` scopes.** With only
+  `w_organization_social`, LinkedIn returns 403 ACCESS_DENIED
+  (`partnerApiSocialActions.CREATE` / `partnerApiReactions.CREATE`), even on the Page's
+  own post. `LINKEDIN_ORG_SCOPES` now requests `r_/w_organization_social_feed`. Pages
+  connected before this change must be reconnected via `oauth-start` before comment
+  and react will work.
+- **Unverified:** the `/rest/organizations?ids=List(...)` batch projection.
+
 There is no settings UI yet; configure via the plugin config API.
