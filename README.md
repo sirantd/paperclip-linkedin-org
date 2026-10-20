@@ -55,6 +55,44 @@ Generate a DEK with:
 openssl rand -base64 32
 ```
 
+## Connect
+
+An operator connects and disconnects the Pages of a company through these
+board routes. Each path starts with `/api/plugins/sirantd.linkedin-org/api`.
+
+| Route | Request | Purpose |
+|---|---|---|
+| `oauth-start` | `POST /oauth/start` | Stores an OAuth state for the operator. Returns the LinkedIn authorization URL and the requested scopes. |
+| `oauth-callback` | `GET /oauth/callback?companyId={companyId}` | The redirect URI. LinkedIn sends the browser of the operator here. The route finishes connect and returns `{ outcome, detail }`. |
+| `oauth-complete` | `POST /oauth/complete` | Finishes connect with the redirect fields in the body: `code` and `state`, or `error` and `error_description`. Returns `{ connected }` or `{ error, kind }`. |
+| `disconnect` | `POST /pages/{organizationId}/disconnect` | Revokes the Page connection of one Page. Takes the organization id or the Organization URN. Returns 404 if the company has no Page connection for the Page. |
+
+`oauth-start` refuses a DEK that cannot seal tokens with a 500 and text that
+names `dekRef`. LinkedIn then gets no request, and no authorization code is
+spent.
+
+The OAuth state is valid for one finish within 10 minutes. The first finish
+uses it up, whatever the outcome, so the operator must start connect again
+after a refusal. Only the operator who started connect can finish it. In
+`local_trusted` mode each operator has the actor id `local-board`, so this rule
+has no effect there.
+
+Each finish gives one connect outcome. Both finish routes return the same
+status for one outcome. A 400 means that the operator can remove the cause and
+connect again.
+
+| Kind | Status | Cause |
+|---|---|---|
+| `connected` | 200 | Each Page that the authorizing member administers has an active Page connection. |
+| `declined` | 400 | The authorizing member declined, or LinkedIn refused the authorization. |
+| `incomplete_redirect` | 400 | The redirect has no authorization code or no OAuth state. |
+| `invalid_state` | 400 | The OAuth state is unknown, expired or used, or a different operator started connect. |
+| `code_refused` | 400 | LinkedIn refused the authorization code: it expired or was used. |
+| `grant_refused` | 400 | LinkedIn did not grant the needed scopes, or did not report the granted scopes. |
+| `no_page` | 400 | The authorizing member administers no Page. |
+| `linkedin_failed` | 502 | The token endpoint or a LinkedIn call failed. |
+| `plugin_failed` | 500 | The plugin settings, the DEK or the database failed. This includes a Client ID or a Client Secret that LinkedIn refused (`invalid_client`). |
+
 ## Agent tools
 
 | Tool | Purpose |

@@ -64,9 +64,9 @@ export type ConnectRefusal =
   | "grant_refused"
   /** The authorizing member administers no Page. */
   | "no_page"
-  /** The token endpoint or a LinkedIn call failed. */
+  /** The token endpoint or a LinkedIn call failed. A refused Client ID or Client Secret is plugin_failed. */
   | "linkedin_failed"
-  /** The plugin settings, the DEK or the database failed. */
+  /** The plugin settings (a Client ID or a Client Secret that LinkedIn refused too), the DEK or the database failed. */
   | "plugin_failed";
 
 /** The result of one finish of connect: the connected Pages, or a refusal with operator-facing text. */
@@ -101,7 +101,11 @@ export interface PageConnections {
   ): Promise<T>;
   /** Every Page connection of the company, in any status, by name with unnamed Pages last. */
   list(companyId: string): Promise<PageSummary[]>;
-  /** Begin connect: remember an OAuth state for the operator and return the LinkedIn authorization URL. */
+  /**
+   * Begin connect: remember an OAuth state for the operator and return the
+   * LinkedIn authorization URL. A DEK that cannot seal tokens fails before the
+   * OAuth state exists, with text that names dekRef.
+   */
   startConnect(
     companyId: string,
     operatorId: string,
@@ -252,6 +256,8 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
 
     async startConnect(companyId, operatorId) {
       const creds = await loadCredentials(ctx, companyId);
+      // A bad DEK must not reach LinkedIn: the finish could not store the tokens.
+      requireSealingKey(creds.dek);
       const state = crypto.randomUUID();
       const pending: PendingConnect = { createdAt: Date.now(), actorId: operatorId };
       await ctx.state.set(oauthStateKey(companyId, state), pending);
@@ -364,6 +370,18 @@ function storedTokens(tokens: LinkedInTokens, dek: string) {
     expiresAt: new Date(tokens.expiresAt).toISOString(),
     refreshExpiresAt: tokens.refreshTokenExpiresAt ? new Date(tokens.refreshTokenExpiresAt).toISOString() : null,
   };
+}
+
+/** Refuse a DEK that cannot seal tokens, with operator-facing text that names dekRef. */
+function requireSealingKey(dek: string): void {
+  try {
+    sealToken("", dek);
+  } catch (err) {
+    throw new Error(
+      `The Token Encryption Key (dekRef) cannot seal tokens: ${(err as Error).message}. ` +
+        "Correct it in Settings, then connect again.",
+    );
+  }
 }
 
 function requireOrganizationId(organizationRef: string): string {
@@ -553,19 +571,10 @@ async function completeOAuth(
   let creds: Credentials;
   try {
     creds = await loadCredentials(ctx, companyId);
+    // The DEK can change after start. Examine it again before LinkedIn spends the code.
+    requireSealingKey(creds.dek);
   } catch (err) {
     return { kind: "plugin_failed", reason: (err as Error).message };
-  }
-  try {
-    // Examine the DEK before LinkedIn spends the code.
-    sealToken("", creds.dek);
-  } catch (err) {
-    return {
-      kind: "plugin_failed",
-      reason:
-        `The Token Encryption Key (dekRef) cannot seal tokens: ${(err as Error).message}. ` +
-        "Correct it in Settings, then connect again.",
-    };
   }
 
   let tokens: LinkedInTokens;
@@ -581,6 +590,16 @@ async function completeOAuth(
       return {
         kind: "code_refused",
         reason: `LinkedIn refused the authorization code (${err.message}). Start connect again.`,
+      };
+    }
+    if (err instanceof LinkedInOAuthError && err.code === "invalid_client") {
+      // A settings fault. The authorization used the same Client ID and
+      // succeeded, so the Client Secret is the wrong value.
+      return {
+        kind: "plugin_failed",
+        reason:
+          `LinkedIn refused the client credentials of the plugin (${err.message}). ` +
+          "Correct clientSecretRef in the plugin config, then connect again.",
       };
     }
     return {

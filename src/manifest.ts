@@ -247,7 +247,6 @@ const manifest = {
   capabilities: [
     "companies.read",
     "activity.log.write",
-    "activity.read",
     "plugin.state.read",
     "plugin.state.write",
     "database.namespace.migrate",

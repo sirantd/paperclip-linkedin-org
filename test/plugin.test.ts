@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
-import { createPlugin } from "../src/worker.js";
+import { readFileSync } from "node:fs";
+import { CONNECT_RESULTS, createPlugin } from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
@@ -13,6 +14,7 @@ import {
   ORG_ACLS_URL,
   POSTS_URL,
   REACTIONS_URL,
+  TOKEN_URL,
   UPLOAD_URL,
   json,
   routeInput,
@@ -510,6 +512,14 @@ describe("oauth-start route", () => {
       body: { error: "LinkedIn Page plugin is not configured for this company" },
     });
   });
+
+  it("answers 500 with text that names dekRef for a DEK that cannot seal tokens", async () => {
+    world.secrets.dek = Buffer.alloc(16).toString("base64");
+    expect(await route("oauth-start", { body: { companyId: world.companyId } })).toEqual({
+      status: 500,
+      body: { error: expect.stringMatching(/^The Token Encryption Key \(dekRef\) cannot seal tokens: /) },
+    });
+  });
 });
 
 describe("oauth-complete route", () => {
@@ -571,6 +581,28 @@ describe("finish routes", () => {
       status: 502,
       body: { error: reason, kind: "linkedin_failed" },
     });
+  });
+
+  it("answer 500 when LinkedIn refuses the client", async () => {
+    world.linkedin.scriptConnect([ACME]);
+    world.linkedin.on("POST", TOKEN_URL, () => json({ error: "invalid_client" }, 401));
+
+    expect(await route("oauth-callback", { query: { code: "code-1", state: await startConnect() } })).toMatchObject({
+      status: 500,
+      body: { detail: expect.stringContaining("Primary Client Secret") },
+    });
+    expect(await route("oauth-complete", { body: { code: "code-1", state: await startConnect() } })).toMatchObject({
+      status: 500,
+      body: { kind: "plugin_failed" },
+    });
+  });
+
+  it("give the statuses that README.md shows", () => {
+    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+    const section = readme.split("\n## Connect\n")[1]!.split("\n## ")[0]!;
+    const rows = [...section.matchAll(/^\| `(\w+)` \| (\d{3}) \|/gm)].map(([, kind, status]) => [kind, Number(status)]);
+
+    expect(rows).toEqual(Object.entries(CONNECT_RESULTS).map(([kind, { status }]) => [kind, status]));
   });
 });
 
