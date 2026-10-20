@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import plugin from "../src/worker.js";
 import manifest from "../src/manifest.js";
@@ -59,6 +59,37 @@ async function listPages() {
   const res = await route("list-pages", { query: { companyId: world.companyId } });
   return (wire(res.body) as { pages: Array<Record<string, unknown>> }).pages;
 }
+
+describe("setup", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The log entries of one setup() at `months` calendar months after LINKEDIN_VERSION. */
+  async function setupLogsAt(months: number) {
+    const year = Number(LINKEDIN_VERSION.slice(0, 4));
+    const month = Number(LINKEDIN_VERSION.slice(4, 6));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(Date.UTC(year, month - 1 + months, 15)));
+    const before = world.harness.logs.length;
+    await plugin.definition.setup(world.ctx);
+    return world.harness.logs.slice(before);
+  }
+
+  it("does not warn while LINKEDIN_VERSION is younger than 11 months", async () => {
+    expect((await setupLogsAt(10)).filter((log) => log.level === "warn")).toEqual([]);
+  });
+
+  it("warns from 11 months after LINKEDIN_VERSION", async () => {
+    expect(await setupLogsAt(11)).toContainEqual({
+      level: "warn",
+      message:
+        `LinkedIn API version ${LINKEDIN_VERSION} is 11 months old. LinkedIn retires a version ` +
+        "after one year at the earliest. Update LINKEDIN_VERSION and release the plugin.",
+      meta: { linkedInVersion: LINKEDIN_VERSION },
+    });
+  });
+});
 
 describe("agent tools", () => {
   it("registers each manifest tool with its manifest declaration", async () => {

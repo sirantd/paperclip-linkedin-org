@@ -15,6 +15,7 @@ import {
   reactAsOrganization,
   type ReactionType,
 } from "./adapters/linkedin/publish.js";
+import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";
 import manifest from "./manifest.js";
 
 /**
@@ -51,6 +52,8 @@ const plugin = definePlugin({
     const pages = createPageConnections(ctx);
     shared = { ctx, pages };
     ctx.logger.info("LinkedIn Page plugin starting");
+    const warning = versionWarning(new Date());
+    if (warning) ctx.logger.warn(warning, { linkedInVersion: LINKEDIN_VERSION });
 
     ctx.tools.register(
       "linkedin-page-list",
