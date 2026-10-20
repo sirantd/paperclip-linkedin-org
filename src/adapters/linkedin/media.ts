@@ -1,6 +1,4 @@
-import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
-import { LINKEDIN_DOCUMENTS_URL, LINKEDIN_IMAGES_URL, restHeaders } from "./constants.js";
-import { apiError } from "./errors.js";
+/** The media rules of LinkedIn. The Page calls in page.ts apply them; this file makes no LinkedIn call. */
 
 /** The LinkedIn API that takes a file: the Images API or the Documents API. */
 export type MediaKind = "image" | "document";
@@ -25,6 +23,12 @@ export interface UploadedMedia {
   mediaUrn: string;
   status: MediaStatus;
   kind: MediaKind;
+}
+
+/** The owner and the processing state of an uploaded file, as the status read returns them. */
+export interface MediaState {
+  owner: string;
+  status: MediaStatus;
 }
 
 /**
@@ -52,86 +56,34 @@ const KIND_BY_CONTENT_TYPE: Readonly<Record<string, MediaKind>> = {
 
 export const ACCEPTED_FILES = "a JPG, GIF or PNG image, or a PDF, DOC, DOCX, PPT or PPTX document";
 
-const URL_BY_KIND: Readonly<Record<MediaKind, string>> = {
-  image: LINKEDIN_IMAGES_URL,
-  document: LINKEDIN_DOCUMENTS_URL,
-};
-
-/** The LinkedIn API for a content type, or null when LinkedIn does not accept the type. */
-function mediaKindForContentType(contentType: string): MediaKind | null {
-  return KIND_BY_CONTENT_TYPE[contentType.split(";")[0]!.trim().toLowerCase()] ?? null;
-}
-
-/** The kind of a media URN, or null for a URN that is not an image or a document. */
-function mediaKindOfUrn(mediaUrn: string): MediaKind | null {
-  if (mediaUrn.startsWith("urn:li:image:")) return "image";
-  if (mediaUrn.startsWith("urn:li:document:")) return "document";
-  return null;
+/** The LinkedIn API for an upload of `contentType`. A type that LinkedIn does not accept fails. */
+export function uploadKind(contentType: string): MediaKind {
+  const kind = KIND_BY_CONTENT_TYPE[contentType.split(";")[0]!.trim().toLowerCase()];
+  if (!kind) throw new Error(`LinkedIn does not accept ${contentType}. Attach ${ACCEPTED_FILES}.`);
+  return kind;
 }
 
 /**
- * Upload a file that the Page owns, then read its processing state. A content
- * type that LinkedIn does not accept fails before any LinkedIn call.
- *
- * The file bytes go through the Node fetch, not `http`: the host client sends a
- * body that is not a string as String(body), which breaks them. That one
- * request skips the host tracing and audit log. The lookup of fetch is at call
- * time, so a test can replace it.
+ * The kind of a file for a post. A URN that is not an image or a document
+ * fails, and so does a document without a title.
  */
-export async function uploadMedia(
-  http: PluginHttpClient,
-  input: {
-    accessToken: string;
-    organizationUrn: string;
-    contentType: string;
-    bytes: Uint8Array<ArrayBuffer>;
-  },
-): Promise<UploadedMedia> {
-  const kind = mediaKindForContentType(input.contentType);
-  if (!kind) throw new Error(`LinkedIn does not accept ${input.contentType}. Attach ${ACCEPTED_FILES}.`);
-
-  const res = await http.fetch(`${URL_BY_KIND[kind]}?action=initializeUpload`, {
-    method: "POST",
-    headers: restHeaders(input.accessToken),
-    body: JSON.stringify({ initializeUploadRequest: { owner: input.organizationUrn } }),
-  });
-  if (!res.ok) throw await apiError(res, `LinkedIn ${kind} upload start`);
-  const { value } = (await res.json()) as { value: { uploadUrl: string } & Partial<Record<MediaKind, string>> };
-  const mediaUrn = value[kind];
-  if (!mediaUrn) throw new Error(`LinkedIn started the ${kind} upload but returned no ${kind} URN`);
-
-  // The upload URL takes the OAuth token but no versioned REST headers.
-  const put = await fetch(value.uploadUrl, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${input.accessToken}`, "Content-Type": input.contentType },
-    body: input.bytes,
-  });
-  if (!put.ok) throw await apiError(put, `LinkedIn ${kind} upload`);
-
-  // If this read fails, the uploaded file stays unused at LinkedIn. A post
-  // with the file needs the same read, so retrying the upload is the fix.
-  const { status } = await mediaState(http, { accessToken: input.accessToken, mediaUrn, kind });
-  return { mediaUrn, status, kind };
-}
-
-/**
- * Refuse a file that cannot go in a post as the Page now: a URN that is not an
- * image or a document, a document without a title, a file of another Page, or
- * a file that LinkedIn has not finished or could not process. The first two
- * refusals come before any LinkedIn call.
- */
-export async function requirePostable(
-  http: PluginHttpClient,
-  input: { accessToken: string; organizationUrn: string } & PostFile,
-): Promise<void> {
-  const { mediaUrn, organizationUrn } = input;
-  const kind = mediaKindOfUrn(mediaUrn);
+export function postFileKind(file: PostFile): MediaKind {
+  const kind = mediaKindOfUrn(file.mediaUrn);
   if (!kind) {
-    throw new Error(`${mediaUrn} is not an image or a document. Pass the mediaUrn that linkedin-page-upload returned.`);
+    throw new Error(
+      `${file.mediaUrn} is not an image or a document. Pass the mediaUrn that linkedin-page-upload returned.`,
+    );
   }
-  if (kind === "document" && !input.title) throw new Error("A post with a document needs a title.");
+  if (kind === "document" && !file.title) throw new Error("A post with a document needs a title.");
+  return kind;
+}
 
-  const state = await mediaState(http, { accessToken: input.accessToken, mediaUrn, kind });
+/**
+ * Refuse a file that cannot go in a post as the Page `organizationUrn` now: a
+ * file of another Page, or a file that LinkedIn has not finished or could not
+ * process.
+ */
+export function requirePostable(mediaUrn: string, state: MediaState, organizationUrn: string): void {
   if (state.owner !== organizationUrn) {
     throw new Error(
       `${mediaUrn} belongs to ${state.owner}, not to ${organizationUrn}. ` +
@@ -156,15 +108,9 @@ export async function requirePostable(
   }
 }
 
-/** The owner and the processing state of an uploaded file. */
-async function mediaState(
-  http: PluginHttpClient,
-  input: { accessToken: string; mediaUrn: string; kind: MediaKind },
-): Promise<{ owner: string; status: MediaStatus }> {
-  const res = await http.fetch(`${URL_BY_KIND[input.kind]}/${encodeURIComponent(input.mediaUrn)}`, {
-    headers: restHeaders(input.accessToken),
-  });
-  if (!res.ok) throw await apiError(res, `LinkedIn ${input.kind} status`);
-  const { owner, status } = (await res.json()) as { owner: string; status: MediaStatus };
-  return { owner, status };
+/** The kind of a media URN, or null for a URN that is not an image or a document. */
+function mediaKindOfUrn(mediaUrn: string): MediaKind | null {
+  if (mediaUrn.startsWith("urn:li:image:")) return "image";
+  if (mediaUrn.startsWith("urn:li:document:")) return "document";
+  return null;
 }

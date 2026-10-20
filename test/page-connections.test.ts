@@ -27,7 +27,7 @@ let pages: PageConnections;
 beforeEach(async () => {
   world = await createWorld();
   world.linkedin.scriptActions();
-  pages = createPageConnections(world.ctx);
+  pages = createPageConnections(world.ctx, world.linkedin.fetch);
 });
 
 afterEach(() => world.close());
