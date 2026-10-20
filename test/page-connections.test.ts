@@ -106,6 +106,12 @@ describe("actAs", () => {
       expect((await actAs()).organizationId).toBe("222");
     });
 
+    it("uses the default Page when the call names an empty reference", async () => {
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      await connect([ACME, GLOBEX]);
+      expect((await actAs("")).organizationId).toBe("222");
+    });
+
     it("uses a default Page set as an organization id", async () => {
       world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "222" }));
       await connect([ACME, GLOBEX]);
