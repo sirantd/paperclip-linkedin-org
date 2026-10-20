@@ -29,7 +29,7 @@ unavailable, so the authorizing member URN is not recorded.
 | Field | Notes |
 |---|---|
 | `dekRef` | Secret holding 32 random bytes, base64. Envelope-encrypts stored tokens (AES-256-GCM). |
-| `redirectBaseUrl` | Public origin of this instance. Redirect URI is `{base}/api/plugins/sirantd.linkedin-org/api/oauth/complete` — register it in the LinkedIn app. |
+| `redirectBaseUrl` | Public origin of this instance. Redirect URI is `{base}/api/plugins/sirantd.linkedin-org/api/oauth/callback?companyId={companyId}`. Register it in the LinkedIn app for each company: LinkedIn compares the full URI, query included. |
 | `clientIdRef` | Secret holding the app Client ID. |
 | `clientSecretRef` | Secret holding the Primary Client Secret. |
 | `defaultOrganizationUrn` | Optional. Used when a tool call omits `organizationId`. |
