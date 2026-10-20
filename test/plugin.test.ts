@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
-import plugin from "../src/worker.js";
+import { createPlugin } from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
@@ -32,9 +32,12 @@ const PDF = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]);
 // included, in linkedin-page.test.ts.
 
 let world: World;
+let plugin: ReturnType<typeof createPlugin>;
 
 beforeEach(async () => {
   world = await createWorld();
+  // The file bytes of an upload go to the LinkedIn fake.
+  plugin = createPlugin(world.linkedin.fetch);
   await plugin.definition.setup(world.ctx);
 });
 

@@ -76,10 +76,7 @@ export interface PageCalls {
  */
 export type FileTransport = (url: string, init: RequestInit) => Promise<Response>;
 
-/**
- * The Node fetch. The file PUT skips the host tracing and audit log. The
- * lookup of fetch is at call time, so the worker tests can replace it.
- */
+/** The Node fetch. The file PUT skips the host tracing and audit log. */
 const nodeFetch: FileTransport = (url, init) => fetch(url, init);
 
 const URL_BY_KIND: Readonly<Record<MediaKind, string>> = {

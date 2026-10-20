@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
-import { vi } from "vitest";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { PluginApiRequestInput, PluginContext, PluginHttpClient } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
@@ -320,13 +319,6 @@ export async function createWorld(): Promise<World> {
 
   const companyId = await addCompany();
   configs.set(companyId, pluginConfig());
-
-  // The worker builds its Page connections with the default file transport,
-  // the Node fetch, and plugin.test.ts cannot pass it the fake. A test that
-  // builds the Page connections or the Page calls passes linkedin.fetch and
-  // needs no stub. The stub comes after the PGLite load; vitest.config.ts
-  // restores the real fetch after each test.
-  vi.stubGlobal("fetch", linkedin.fetch);
 
   const close = () => pg.close();
 
