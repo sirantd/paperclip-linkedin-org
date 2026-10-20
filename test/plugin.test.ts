@@ -511,6 +511,14 @@ describe("oauth-start route", () => {
       body: { error: "LinkedIn Page plugin is not configured for this company" },
     });
   });
+
+  it("answers 500 with text that names dekRef for a DEK that cannot seal tokens", async () => {
+    world.secrets.dek = Buffer.alloc(16).toString("base64");
+    expect(await route("oauth-start", { body: { companyId: world.companyId } })).toEqual({
+      status: 500,
+      body: { error: expect.stringMatching(/^The Token Encryption Key \(dekRef\) cannot seal tokens: /) },
+    });
+  });
 });
 
 describe("oauth-complete route", () => {
