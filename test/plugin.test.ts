@@ -29,7 +29,8 @@ const PDF = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]);
 
 // Smoke tests for the agent tools and API routes: wiring, wire shapes and
 // the answers the worker builds. Page connection behavior is covered in
-// page-connections.test.ts.
+// page-connections.test.ts, and the LinkedIn calls of a Page, media rules
+// included, in linkedin-page.test.ts.
 
 let world: World;
 
@@ -322,12 +323,11 @@ describe("linkedin-page-react", () => {
     await connect([ACME]);
     world.linkedin.scriptActions();
 
-    const result = await tool("linkedin-page-react", { postUrn: "urn:li:share:1" });
+    const result = await tool("linkedin-page-react", { postUrn: "urn:li:share:1", reactionType: "PRAISE" });
 
     expect(result).toEqual({ content: "Reacted to urn:li:share:1 as Acme." });
     const [req] = world.linkedin.requestsTo(REACTIONS_URL);
-    expect(req!.url.searchParams.get("actor")).toBe("urn:li:organization:111");
-    expect(JSON.parse(req!.body)).toEqual({ root: "urn:li:share:1", reactionType: "LIKE" });
+    expect(JSON.parse(req!.body)).toEqual({ root: "urn:li:share:1", reactionType: "PRAISE" });
   });
 
   it("names the action and the Page when LinkedIn refuses the reaction", async () => {
@@ -352,12 +352,7 @@ describe("linkedin-page-comment", () => {
 
     expect(result).toEqual({ content: "Commented on urn:li:share:1 as Acme." });
     const [req] = world.linkedin.requestsTo(COMMENTS_URL);
-    expect(req!.url.pathname).toBe("/rest/socialActions/urn%3Ali%3Ashare%3A1/comments");
-    expect(JSON.parse(req!.body)).toEqual({
-      actor: "urn:li:organization:111",
-      object: "urn:li:share:1",
-      message: { text: "Nice" },
-    });
+    expect(JSON.parse(req!.body)).toMatchObject({ object: "urn:li:share:1", message: { text: "Nice" } });
   });
 });
 

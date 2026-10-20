@@ -48,9 +48,3 @@ export function restHeaders(accessToken: string): Record<string, string> {
     "Content-Type": "application/json",
   };
 }
-
-export function organizationUrn(organizationId: string): string {
-  return organizationId.startsWith("urn:li:organization:")
-    ? organizationId
-    : `urn:li:organization:${organizationId}`;
-}

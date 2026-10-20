@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { linkedInPage, type PageCalls } from "../src/adapters/linkedin/page.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
 import {
+  COMMENTS_URL,
   DOCUMENTS_URL,
   FakeLinkedIn,
   IMAGES_URL,
   POSTS_URL,
+  REACTIONS_URL,
   UPLOAD_URL,
   hostHttp,
   json,
@@ -114,6 +116,42 @@ describe("post", () => {
         "Upload the file again with the organizationId of the post.",
     );
     expect(linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
+  });
+});
+
+describe("react", () => {
+  it("reacts as the Page, with LIKE when no type is given", async () => {
+    linkedin.scriptActions();
+
+    await page.react("urn:li:share:1");
+
+    const [req] = linkedin.requestsTo(REACTIONS_URL);
+    expect(req!.headers.Authorization).toBe("Bearer access-1");
+    expect(req!.url.searchParams.get("actor")).toBe("urn:li:organization:111");
+    expect(JSON.parse(req!.body)).toEqual({ root: "urn:li:share:1", reactionType: "LIKE" });
+  });
+
+  it.each([409, 422])("counts a reaction that exists already (%i) as done", async (status) => {
+    linkedin.on("POST", REACTIONS_URL, () => json({ code: "DUPLICATE_REACTION" }, status));
+
+    await expect(page.react("urn:li:share:1", "PRAISE")).resolves.toBeUndefined();
+  });
+});
+
+describe("comment", () => {
+  it("comments as the Page", async () => {
+    linkedin.scriptActions();
+
+    await page.comment("urn:li:share:1", "Nice");
+
+    const [req] = linkedin.requestsTo(COMMENTS_URL);
+    expect(req!.headers.Authorization).toBe("Bearer access-1");
+    expect(req!.url.pathname).toBe("/rest/socialActions/urn%3Ali%3Ashare%3A1/comments");
+    expect(JSON.parse(req!.body)).toEqual({
+      actor: "urn:li:organization:111",
+      object: "urn:li:share:1",
+      message: { text: "Nice" },
+    });
   });
 });
 

@@ -15,14 +15,15 @@ export type PageConnectionStatus = "active" | "expired" | "revoked";
 
 /**
  * The Page one tool call acts as, and the LinkedIn calls it makes with an
- * access token that is valid now.
+ * access token that is valid now. It is valid only inside the work of actAs:
+ * a call after the work can use a stale token, and actAs no longer sees its
+ * errors.
  */
 export interface ActingPage extends PageCalls {
   organizationId: string;
   organizationUrn: string;
   /** The Page name, or the organization URN when LinkedIn gave no name. */
   displayName: string;
-  accessToken: string;
 }
 
 export interface PageSummary {
@@ -44,8 +45,10 @@ export interface PageSummary {
  */
 export interface PageConnections {
   /**
-   * Choose the acting Page and run `work` as it with a fresh access token. The
-   * Page is the named one, else the default Page, else the only active Page.
+   * Choose the acting Page and run `work` with it. The acting Page makes the
+   * LinkedIn calls with a fresh access token; the token stays behind this
+   * interface. The Page is the named one, else the default Page, else the only
+   * active Page.
    * A Page connection without a scope that `action` needs refuses the action.
    * If LinkedIn rejects the token (401), the Page connection becomes expired.
    * A refusal (403) or a rate limit (429) keeps it active, with text that names
@@ -129,7 +132,6 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
           organizationId: row.organization_id,
           organizationUrn: row.organization_urn,
           displayName: row.page_name ?? row.organization_urn,
-          accessToken,
           ...linkedInPage(ctx.http, { accessToken, organizationUrn: row.organization_urn }),
         });
       } catch (err) {

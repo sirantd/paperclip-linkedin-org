@@ -5,11 +5,7 @@ import {
   type PageConnections,
   type PageSummary,
 } from "./page-connections.js";
-import {
-  commentAsOrganization,
-  reactAsOrganization,
-  type ReactionType,
-} from "./adapters/linkedin/publish.js";
+import type { ReactionType } from "./adapters/linkedin/publish.js";
 import { MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
 import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";
 import manifest from "./manifest.js";
@@ -163,12 +159,7 @@ const plugin = definePlugin({
         const p = params as { postUrn: string; organizationId?: string; reactionType?: ReactionType };
         try {
           return await pages.actAs(run.companyId, p.organizationId, "react", async (page) => {
-            await reactAsOrganization(ctx.http, {
-              accessToken: page.accessToken,
-              organizationId: page.organizationId,
-              postUrn: p.postUrn,
-              reactionType: p.reactionType,
-            });
+            await page.react(p.postUrn, p.reactionType);
             return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
           });
         } catch (err) {
@@ -184,12 +175,7 @@ const plugin = definePlugin({
         const p = params as { postUrn: string; text: string; organizationId?: string };
         try {
           return await pages.actAs(run.companyId, p.organizationId, "comment", async (page) => {
-            await commentAsOrganization(ctx.http, {
-              accessToken: page.accessToken,
-              organizationId: page.organizationId,
-              postUrn: p.postUrn,
-              text: p.text,
-            });
+            await page.comment(p.postUrn, p.text);
             return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
           });
         } catch (err) {

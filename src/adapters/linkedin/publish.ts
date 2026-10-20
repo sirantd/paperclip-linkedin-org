@@ -1,11 +1,5 @@
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
-import {
-  LINKEDIN_COMMENTS_URL,
-  LINKEDIN_POSTS_URL,
-  LINKEDIN_REACTIONS_URL,
-  organizationUrn,
-  restHeaders,
-} from "./constants.js";
+import { LINKEDIN_COMMENTS_URL, LINKEDIN_POSTS_URL, LINKEDIN_REACTIONS_URL, restHeaders } from "./constants.js";
 import { apiError } from "./errors.js";
 import type { PostFile } from "./media.js";
 
@@ -80,13 +74,12 @@ export async function reactAsOrganization(
   http: PluginHttpClient,
   input: {
     accessToken: string;
-    organizationId: string;
+    organizationUrn: string;
     postUrn: string;
     reactionType?: ReactionType;
   },
 ): Promise<void> {
-  const actor = organizationUrn(input.organizationId);
-  const url = `${LINKEDIN_REACTIONS_URL}?actor=${encodeURIComponent(actor)}`;
+  const url = `${LINKEDIN_REACTIONS_URL}?actor=${encodeURIComponent(input.organizationUrn)}`;
   const res = await http.fetch(url, {
     method: "POST",
     headers: restHeaders(input.accessToken),
@@ -103,17 +96,16 @@ export async function commentAsOrganization(
   http: PluginHttpClient,
   input: {
     accessToken: string;
-    organizationId: string;
+    organizationUrn: string;
     postUrn: string;
     text: string;
   },
 ): Promise<void> {
-  const actor = organizationUrn(input.organizationId);
   const url = `${LINKEDIN_COMMENTS_URL}/${encodeURIComponent(input.postUrn)}/comments`;
   const res = await http.fetch(url, {
     method: "POST",
     headers: restHeaders(input.accessToken),
-    body: JSON.stringify({ actor, object: input.postUrn, message: { text: input.text } }),
+    body: JSON.stringify({ actor: input.organizationUrn, object: input.postUrn, message: { text: input.text } }),
   });
   if (!res.ok) throw await apiError(res, "LinkedIn comment");
 }
