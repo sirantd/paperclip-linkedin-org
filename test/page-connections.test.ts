@@ -321,7 +321,29 @@ describe("actAs", () => {
     });
   });
 
-  describe("scopes", () => {
+  describe.each(["array", "text"] as const)("scopes, with the host returning text[] as %s", (form) => {
+    beforeEach(() => {
+      world.textArrays = form;
+    });
+
+    it("allows react to a Page connection with the full grant", async () => {
+      await connect([ACME]);
+      await react();
+      expect(reactionTokens()).toEqual(["Bearer access-1"]);
+    });
+
+    it("refuses post to a Page connection with w_organization_social_feed but not w_organization_social", async () => {
+      await connect([ACME]);
+      // Connect refuses this grant, so only a stored row can hold it.
+      await world.sql(`update ${world.ctx.db.namespace}.page_connections set scopes = $1`, [
+        ["w_organization_social_feed", "rw_organization_admin"],
+      ]);
+
+      await expect(actAs()).rejects.toThrow(
+        "Page 111 was connected without w_organization_social, which post needs. Reconnect the Page in Settings.",
+      );
+    });
+
     it("refuses an action without its scopes before it refreshes the token", async () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S });
       await revertToGrantBeforeFeedScopes(world);

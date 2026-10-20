@@ -96,6 +96,10 @@ interface Credentials {
   defaultOrganizationRef: string | null;
 }
 
+/**
+ * A stored Page connection after readRow: each value has one form. The tokens
+ * stay sealed under the DEK until a step opens them.
+ */
 interface PageConnectionRow {
   id: string;
   organization_id: string;
@@ -106,8 +110,21 @@ interface PageConnectionRow {
   scopes: string[];
   access_token_sealed: string;
   refresh_token_sealed: string | null;
+  /** ISO 8601 expiry of the stored access token. */
   expires_at: string;
 }
+
+/**
+ * A row as ctx.db.query returns it. The host sends rows through JSON-RPC in
+ * the form that its driver gives: a timestamp as a Date or as text, and a
+ * text[] value as an array or as Postgres array text (`{a,b}`).
+ */
+type StoredRow = Omit<PageConnectionRow, "scopes" | "expires_at"> & { scopes: unknown; expires_at: unknown };
+
+/** The columns of PageConnectionRow; every read of a Page connection selects them. */
+const COLUMNS =
+  "id, organization_id, organization_urn, page_name, vanity_name, status, scopes, " +
+  "access_token_sealed, refresh_token_sealed, expires_at";
 
 /** Refresh a little before actual expiry so a long-running post never races the deadline. */
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
@@ -166,11 +183,7 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
     },
 
     async list(companyId) {
-      const rows = await ctx.db.query<PageConnectionRow>(
-        `select organization_id, organization_urn, page_name, vanity_name, status, expires_at
-           from ${table(ctx)} where company_id = $1 order by page_name nulls last`,
-        [companyId],
-      );
+      const rows = await selectConnections(ctx, "company_id = $1 order by page_name nulls last", [companyId]);
       return rows.map((r) => ({
         organizationId: r.organization_id,
         organizationUrn: r.organization_urn,
@@ -178,7 +191,7 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
         vanityName: r.vanity_name,
         displayName: r.page_name ?? r.organization_urn,
         status: r.status,
-        expiresAt: new Date(r.expires_at).toISOString(),
+        expiresAt: r.expires_at,
       }));
     },
 
@@ -242,6 +255,56 @@ function table(ctx: PluginContext): string {
   return `${ctx.db.namespace}.page_connections`;
 }
 
+/** The Page connections that `clause` selects; it holds the where condition and can add an order and a limit. */
+async function selectConnections(
+  ctx: PluginContext,
+  clause: string,
+  params: unknown[],
+): Promise<PageConnectionRow[]> {
+  const rows = await ctx.db.query<StoredRow>(`select ${COLUMNS} from ${table(ctx)} where ${clause}`, params);
+  return rows.map(readRow);
+}
+
+function readRow(row: StoredRow): PageConnectionRow {
+  return { ...row, scopes: readScopes(row), expires_at: readExpiresAt(row) };
+}
+
+/**
+ * The scopes as an array. Postgres array text puts quotes only around an
+ * element with a special character, and a scope name has none.
+ */
+function readScopes(row: StoredRow): string[] {
+  const { scopes } = row;
+  if (Array.isArray(scopes) && scopes.every((scope) => typeof scope === "string")) return scopes;
+  if (typeof scopes === "string" && /^\{[^"\\{}]*\}$/.test(scopes)) {
+    return scopes.slice(1, -1).split(",").filter(Boolean);
+  }
+  throw new Error(
+    `The stored scopes of Page ${row.organization_id} have a form that the plugin cannot read: ${JSON.stringify(scopes)}.`,
+  );
+}
+
+function readExpiresAt(row: StoredRow): string {
+  const { expires_at: stored } = row;
+  const expiresAt = stored instanceof Date || typeof stored === "string" ? new Date(stored) : null;
+  if (!expiresAt || Number.isNaN(expiresAt.getTime())) {
+    throw new Error(
+      `The stored token expiry of Page ${row.organization_id} is not a time: ${JSON.stringify(stored)}.`,
+    );
+  }
+  return expiresAt.toISOString();
+}
+
+/** The stored form of the tokens of a grant: sealed under the DEK, with ISO 8601 expiry times. */
+function storedTokens(tokens: LinkedInTokens, dek: string) {
+  return {
+    accessTokenSealed: sealToken(tokens.accessToken, dek),
+    refreshTokenSealed: tokens.refreshToken ? sealToken(tokens.refreshToken, dek) : null,
+    expiresAt: new Date(tokens.expiresAt).toISOString(),
+    refreshExpiresAt: tokens.refreshTokenExpiresAt ? new Date(tokens.refreshTokenExpiresAt).toISOString() : null,
+  };
+}
+
 function requireOrganizationId(organizationRef: string): string {
   const organizationId = organizationIdOf(organizationRef);
   if (!organizationId) {
@@ -275,14 +338,13 @@ async function findConnection(
   organizationId: string | null,
 ): Promise<PageConnectionRow> {
   const rows = organizationId
-    ? await ctx.db.query<PageConnectionRow>(
-        `select * from ${table(ctx)} where company_id = $1 and organization_id = $2 and status = 'active'`,
-        [companyId, organizationId],
-      )
-    : await ctx.db.query<PageConnectionRow>(
-        `select * from ${table(ctx)} where company_id = $1 and status = 'active' order by created_at asc limit 2`,
-        [companyId],
-      );
+    ? await selectConnections(ctx, "company_id = $1 and organization_id = $2 and status = 'active'", [
+        companyId,
+        organizationId,
+      ])
+    : await selectConnections(ctx, "company_id = $1 and status = 'active' order by created_at asc limit 2", [
+        companyId,
+      ]);
 
   if (rows.length === 0) {
     throw new Error(
@@ -363,6 +425,7 @@ async function refreshAccessToken(
     );
   }
 
+  const stored = storedTokens(refreshed, creds.dek);
   await ctx.db.execute(
     `update ${table(ctx)}
         set access_token_sealed = $1,
@@ -371,12 +434,7 @@ async function refreshAccessToken(
             last_refreshed_at = now(),
             updated_at = now()
       where id = $4`,
-    [
-      sealToken(refreshed.accessToken, creds.dek),
-      refreshed.refreshToken ? sealToken(refreshed.refreshToken, creds.dek) : null,
-      new Date(refreshed.expiresAt).toISOString(),
-      row.id,
-    ],
+    [stored.accessTokenSealed, stored.refreshTokenSealed, stored.expiresAt, row.id],
   );
 
   ctx.logger.info("refreshed LinkedIn Page token", {
@@ -430,6 +488,7 @@ async function completeOAuth(
   }
 
   try {
+    const stored = storedTokens(tokens, creds.dek);
     for (const page of pages) {
       await ctx.db.execute(
         `insert into ${table(ctx)}
@@ -459,10 +518,10 @@ async function completeOAuth(
           actorId,
           null, // member URN unavailable without the openid scope
           scopes.join(","),
-          sealToken(tokens.accessToken, creds.dek),
-          tokens.refreshToken ? sealToken(tokens.refreshToken, creds.dek) : null,
-          new Date(tokens.expiresAt).toISOString(),
-          tokens.refreshTokenExpiresAt ? new Date(tokens.refreshTokenExpiresAt).toISOString() : null,
+          stored.accessTokenSealed,
+          stored.refreshTokenSealed,
+          stored.expiresAt,
+          stored.refreshExpiresAt,
         ],
       );
     }
