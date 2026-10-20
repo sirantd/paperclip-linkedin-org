@@ -39,6 +39,8 @@ beforeEach(async () => {
   await plugin.definition.setup(world.ctx);
 });
 
+afterEach(() => world.close());
+
 function route(
   routeKey: string,
   input: Partial<Pick<PluginApiRequestInput, "query" | "body" | "params">> = {},

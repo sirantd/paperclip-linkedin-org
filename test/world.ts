@@ -221,6 +221,8 @@ export interface World {
   sql<T = Record<string, unknown>>(statement: string, params?: unknown[]): Promise<T[]>;
   /** Add a company row so page_connections can reference it. */
   addCompany(): Promise<string>;
+  /** Free the PGLite clone. Each clone holds hundreds of MB until it is closed. */
+  close(): Promise<void>;
 }
 
 let template: Promise<PGlite> | undefined;
@@ -292,7 +294,9 @@ export async function createWorld(): Promise<World> {
   // PGLite load; vitest.config.ts restores the real fetch after each test.
   vi.stubGlobal("fetch", linkedin.fetch);
 
-  return { harness, ctx: harness.ctx, linkedin, companyId, configs, secrets, dek, sql, addCompany };
+  const close = () => pg.close();
+
+  return { harness, ctx: harness.ctx, linkedin, companyId, configs, secrets, dek, sql, addCompany, close };
 }
 
 /**
