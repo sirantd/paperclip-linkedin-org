@@ -4,7 +4,7 @@ import type {
   PluginApiRouteDeclaration,
   PluginToolDeclaration,
 } from "@paperclipai/plugin-sdk";
-import { ACCEPTED_FILES } from "./adapters/linkedin/media.js";
+import { ACCEPTED_FILES, MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
 import type { FromSchema } from "./json-schema.js";
 
 /**
@@ -75,6 +75,8 @@ const instanceConfigSchema: JsonSchema = {
   },
 };
 
+const MIB = 1024 * 1024;
+
 /**
  * The agent tools. The literal types let the worker take each tool's
  * parameter type from its `parametersSchema`.
@@ -93,7 +95,7 @@ const tools = [
     displayName: "Upload a file for a LinkedIn Page post",
     description:
       "Upload one Paperclip issue attachment to LinkedIn for a later post as the company Page. " +
-      `The file must be ${ACCEPTED_FILES}, of 10 MiB or less. Nothing is published. ` +
+      `The file must be ${ACCEPTED_FILES}, of ${MAX_MEDIA_BYTES / MIB} MiB or less. Nothing is published. ` +
       "Returns the mediaUrn and its processing status. Pass the mediaUrn to linkedin-page-post " +
       "with the same organizationId.",
     parametersSchema: {
