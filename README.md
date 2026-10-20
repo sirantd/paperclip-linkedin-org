@@ -63,7 +63,7 @@ manifest changes the schema name** and invalidates `migrations/0001_pages.sql`.
 ## Build
 
 ```bash
-npm install && npm run typecheck && npm run build
+npm install && npm run typecheck && npm test && npm run build
 ```
 
 ## Status
