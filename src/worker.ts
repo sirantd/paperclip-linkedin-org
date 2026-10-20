@@ -16,14 +16,32 @@ import type { ReactionType } from "./adapters/linkedin/publish.js";
 import type { PageAction } from "./adapters/linkedin/scopes.js";
 import { MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
 import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";
-import manifest from "./manifest.js";
+import manifest, { type RouteKey, type ToolName, type ToolParams } from "./manifest.js";
+
+/** What the route handlers use: the live PluginContext and the Page connections built on it. */
+interface Shared {
+  ctx: PluginContext;
+  pages: PageConnections;
+}
 
 /**
  * The host hands the live PluginContext to setup() only; onApiRequest() is a
  * sibling lifecycle hook with no ctx argument, so setup() parks it here, with
  * the Page connections built on it, for the route handlers to use.
  */
-let shared: { ctx: PluginContext; pages: PageConnections } | null = null;
+let shared: Shared | null = null;
+
+/** The action of the agent tool `N`, if `N` is `linkedin-page-{action}`. */
+type ActionOf<N> = N extends `linkedin-page-${infer A}` ? A : never;
+
+/** Each Page action that has an agent tool in the manifest. */
+type PageToolAction = Extract<PageAction, ActionOf<ToolName>>;
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+type Assert<T extends true> = T;
+
+/** The manifest enum of reactionType must name the same reactions as ReactionType. */
+type ReactionTypesMatch = Assert<Equal<ToolParams<"linkedin-page-react">["reactionType"], ReactionType | undefined>>;
 
 /** The wire shape of a listed Page: snake_case, as when callers read table rows directly. */
 function pageRow(page: PageSummary) {
@@ -41,8 +59,8 @@ function pageRow(page: PageSummary) {
  * manifest text only and never reads the declaration given to
  * ctx.tools.register, so the manifest is the one source.
  */
-function declared(name: string) {
-  const tool = manifest.tools?.find((t) => t.name === name);
+function declared(name: ToolName) {
+  const tool = manifest.tools.find((t) => t.name === name);
   if (!tool) throw new Error(`Agent tool ${name} is not declared in the manifest`);
   return tool;
 }
@@ -72,15 +90,16 @@ const plugin = definePlugin({
     /**
      * Register the agent tool `linkedin-page-{action}`. Each call does `action`
      * as the Page that its organizationId names, and a failure becomes the
-     * tool error.
+     * tool error. The parameter type comes from the manifest schema of the tool.
      */
-    function pageTool<P>(
-      action: PageAction,
-      work: (page: ActingPage, params: P, run: ToolRunContext) => Promise<ToolResult>,
+    function pageTool<A extends PageToolAction>(
+      action: A,
+      work: (page: ActingPage, params: ToolParams<`linkedin-page-${A}`>, run: ToolRunContext) => Promise<ToolResult>,
     ): void {
-      const name = `linkedin-page-${action}`;
+      const name = `linkedin-page-${action}` as const;
       ctx.tools.register(name, declared(name), async (params, run) => {
-        const p = params as P & { organizationId?: string };
+        // The host passes the parameters untyped. The manifest schema states their shape.
+        const p = params as ToolParams<`linkedin-page-${A}`> & { organizationId?: string };
         try {
           return await pages.actAs(run.companyId, p.organizationId, action, (page) => work(page, p, run));
         } catch (err) {
@@ -89,7 +108,7 @@ const plugin = definePlugin({
       });
     }
 
-    pageTool<{ attachmentId: string }>("upload", async (page, p, run) => {
+    pageTool("upload", async (page, p, run) => {
       const file = await ctx.issues.getAttachmentContent(p.attachmentId, run.companyId, {
         maxBytes: MAX_MEDIA_BYTES,
       });
@@ -125,13 +144,7 @@ const plugin = definePlugin({
       };
     });
 
-    pageTool<{
-      text: string;
-      visibility?: "PUBLIC" | "LOGGED_IN";
-      mediaUrn?: string;
-      title?: string;
-      altText?: string;
-    }>("post", async (page, p, run) => {
+    pageTool("post", async (page, p, run) => {
       const result = await page.post({
         text: p.text,
         visibility: p.visibility,
@@ -156,12 +169,12 @@ const plugin = definePlugin({
       };
     });
 
-    pageTool<{ postUrn: string; reactionType?: ReactionType }>("react", async (page, p) => {
+    pageTool("react", async (page, p) => {
       await page.react(p.postUrn, p.reactionType);
       return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
     });
 
-    pageTool<{ postUrn: string; text: string }>("comment", async (page, p) => {
+    pageTool("comment", async (page, p) => {
       await page.comment(p.postUrn, p.text);
       return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
     });
@@ -174,76 +187,79 @@ const plugin = definePlugin({
 
 export default plugin;
 
-// definePlugin only wraps the definition. runWorker starts the stdio JSON-RPC
-// loop the host speaks; without it the worker process evaluates and exits 0.
-runWorker(plugin, import.meta.url);
-
 // The host resolves auth, company access and capabilities before calling us,
 // so these handlers only deal with plugin-specific validation.
 
+type RouteHandler = (input: PluginApiRequestInput, shared: Shared) => Promise<PluginApiResponse>;
+
+/** One handler for each manifest route. A manifest route without a handler fails the type check. */
+const routes: Record<RouteKey, RouteHandler> = {
+  async "list-pages"({ companyId }, { pages }) {
+    const listed = await pages.list(companyId);
+    return {
+      status: 200,
+      body: { pages: listed.map((p) => ({ ...pageRow(p), expires_at: p.expiresAt })) },
+    };
+  },
+
+  async "oauth-start"({ companyId, actor }, { pages }) {
+    return { status: 200, body: await pages.startConnect(companyId, actor.actorId) };
+  },
+
+  async "oauth-callback"({ companyId, actor, query }, { pages }) {
+    const code = String(query.code ?? "");
+    const state = String(query.state ?? "");
+    const oauthError = query.error ? String(query.error) : null;
+    if (oauthError) {
+      return callbackResult(400,
+        "LinkedIn authorization was declined",
+        `${oauthError}: ${String(query.error_description ?? "")}`,
+      );
+    }
+    if (!code || !state) {
+      return callbackResult(400, "Missing code or state", "LinkedIn did not return an authorization code.");
+    }
+    try {
+      const connected = await pages.finishConnect(companyId, code, state, actor.actorId);
+      return callbackResult(200,
+        "LinkedIn Page connected",
+        `Connected: ${connected.map((p) => p.name ?? p.organizationUrn).join(", ")}. You can close this tab.`,
+      );
+    } catch (err) {
+      return callbackResult(400, "Could not connect the Page", (err as Error).message);
+    }
+  },
+
+  async "oauth-complete"({ companyId, actor, body }, { pages }) {
+    const { code, state } = (body ?? {}) as { code?: string; state?: string };
+    if (!code || !state) {
+      return { status: 400, body: { error: "code and state are required" } };
+    }
+    const connected = await pages.finishConnect(companyId, code, state, actor.actorId);
+    return { status: 200, body: { connected } };
+  },
+
+  async disconnect({ companyId, params }, { pages }) {
+    const organizationRef = params.organizationId;
+    await pages.disconnect(companyId, organizationRef);
+    return { status: 200, body: { disconnected: organizationRef } };
+  },
+};
+
+function isRouteKey(key: string): key is RouteKey {
+  return Object.hasOwn(routes, key);
+}
+
 async function handleApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (!shared) return { status: 503, body: { error: "Plugin worker is still starting" } };
-  const { ctx, pages } = shared;
+  if (!isRouteKey(input.routeKey)) {
+    return { status: 404, body: { error: `Unknown route ${input.routeKey}` } };
+  }
 
-  const companyId = input.companyId;
   try {
-    switch (input.routeKey) {
-      case "list-pages": {
-        const listed = await pages.list(companyId);
-        return {
-          status: 200,
-          body: { pages: listed.map((p) => ({ ...pageRow(p), expires_at: p.expiresAt })) },
-        };
-      }
-
-      case "oauth-start": {
-        return { status: 200, body: await pages.startConnect(companyId, input.actor.actorId) };
-      }
-
-      case "oauth-callback": {
-        const code = String(input.query.code ?? "");
-        const state = String(input.query.state ?? "");
-        const oauthError = input.query.error ? String(input.query.error) : null;
-        if (oauthError) {
-          return callbackResult(400,
-            "LinkedIn authorization was declined",
-            `${oauthError}: ${String(input.query.error_description ?? "")}`,
-          );
-        }
-        if (!code || !state) {
-          return callbackResult(400, "Missing code or state", "LinkedIn did not return an authorization code.");
-        }
-        try {
-          const connected = await pages.finishConnect(companyId, code, state, input.actor.actorId);
-          return callbackResult(200,
-            "LinkedIn Page connected",
-            `Connected: ${connected.map((p) => p.name ?? p.organizationUrn).join(", ")}. You can close this tab.`,
-          );
-        } catch (err) {
-          return callbackResult(400, "Could not connect the Page", (err as Error).message);
-        }
-      }
-
-      case "oauth-complete": {
-        const body = (input.body ?? {}) as { code?: string; state?: string };
-        if (!body.code || !body.state) {
-          return { status: 400, body: { error: "code and state are required" } };
-        }
-        const connected = await pages.finishConnect(companyId, body.code, body.state, input.actor.actorId);
-        return { status: 200, body: { connected } };
-      }
-
-      case "disconnect": {
-        const organizationRef = input.params.organizationId;
-        await pages.disconnect(companyId, organizationRef);
-        return { status: 200, body: { disconnected: organizationRef } };
-      }
-
-      default:
-        return { status: 404, body: { error: `Unknown route ${input.routeKey}` } };
-    }
+    return await routes[input.routeKey](input, shared);
   } catch (err) {
-    ctx.logger.error("LinkedIn Page API request failed", {
+    shared.ctx.logger.error("LinkedIn Page API request failed", {
       routeKey: input.routeKey,
       error: (err as Error).message,
     });
@@ -261,3 +277,8 @@ async function handleApiRequest(input: PluginApiRequestInput): Promise<PluginApi
 function callbackResult(status: number, outcome: string, detail: string): PluginApiResponse {
   return { status, body: { outcome, detail } };
 }
+
+// definePlugin only wraps the definition. runWorker starts the stdio JSON-RPC
+// loop the host speaks; without it the worker process evaluates and exits 0.
+// It comes last, so the route table exists before the first request.
+runWorker(plugin, import.meta.url);
