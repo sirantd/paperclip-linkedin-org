@@ -25,11 +25,11 @@ import {
 } from "./world.js";
 
 const REDIRECT_PATH = `/api/plugins/${manifest.id}/api/oauth/callback`;
-const NO_PAGE = "No LinkedIn Page is connected for this company. Connect one in Settings first.";
+const NO_PAGE = "No LinkedIn Page is connected for this company. An operator must connect a Page first.";
 /** The refusal of a DEK of 16 bytes. */
 const BAD_DEK =
   "The Token Encryption Key (dekRef) cannot seal tokens: DEK must decode to exactly 32 bytes, got 16. " +
-  "Correct it in Settings, then connect again.";
+  "Correct dekRef in the plugin config, then connect again.";
 
 let world: World;
 let pages: PageConnections;
@@ -150,8 +150,8 @@ describe("actAs", () => {
       world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
       await connect([ACME, GLOBEX]);
       await expect(actAs()).rejects.toThrow(
-        "The default Page acme in the plugin settings is not an organization id or an Organization URN. " +
-          "Correct it in Settings.",
+        "The default Page acme is not an organization id or an Organization URN. " +
+          "An operator must correct defaultOrganizationUrn in the plugin config.",
       );
     });
 
@@ -165,7 +165,7 @@ describe("actAs", () => {
       await connect([ACME, GLOBEX]);
       await expect(actAs()).rejects.toThrow(
         "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-          "or set a default Page in the plugin settings.",
+          "or ask an operator to set the default Page (defaultOrganizationUrn) in the plugin config.",
       );
     });
 
@@ -176,7 +176,7 @@ describe("actAs", () => {
     it("fails when the named Page is not connected", async () => {
       await connect([ACME]);
       await expect(actAs("999")).rejects.toThrow(
-        "No active connection for organization 999. Connect the Page in Settings first.",
+        "No active connection for organization 999. An operator must connect the Page first.",
       );
     });
 
@@ -242,7 +242,7 @@ describe("actAs", () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S, refresh_token: undefined });
 
       await expect(actAs()).rejects.toThrow(
-        "LinkedIn token for Page 111 expired and no refresh token is stored. Reconnect the Page in Settings.",
+        "LinkedIn token for Page 111 expired and no refresh token is stored. An operator must connect the Page again.",
       );
       expect(await statusOf("111")).toBe("expired");
       await expect(actAs()).rejects.toThrow(NO_PAGE);
@@ -254,7 +254,7 @@ describe("actAs", () => {
 
       await expect(actAs()).rejects.toThrow(
         'Refreshing the LinkedIn token for Page 111 failed (LinkedIn token endpoint 400: {"error":"invalid_grant"}). ' +
-          "Reconnect the Page in Settings.",
+          "An operator must connect the Page again.",
       );
       expect(await statusOf("111")).toBe("expired");
     });
@@ -311,7 +311,7 @@ describe("actAs", () => {
 
       await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(rejected))).rejects.toThrow(
         'LinkedIn rejected the token for Page 111 (LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
-          "Reconnect the Page in Settings.",
+          "An operator must connect the Page again.",
       );
       expect(await statusOf("111")).toBe("expired");
     });
@@ -324,7 +324,7 @@ describe("actAs", () => {
         "LinkedIn refused react as Page 111 (LinkedIn react 403: ACCESS_DENIED). " +
           "The Page connection holds the scopes that the plugin requires for react, so the authorizing " +
           "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
-          "Check both, then reconnect the Page in Settings.",
+          "An operator must examine both causes, then connect the Page again.",
       );
       expect(await statusOf("111")).toBe("active");
     });
@@ -368,7 +368,7 @@ describe("actAs", () => {
       ]);
 
       await expect(actAs()).rejects.toThrow(
-        "Page 111 was connected without w_organization_social, which post needs. Reconnect the Page in Settings.",
+        "Page 111 was connected without w_organization_social, which post needs. An operator must connect the Page again.",
       );
     });
 
@@ -378,7 +378,7 @@ describe("actAs", () => {
 
       await expect(pages.actAs(world.companyId, undefined, "react", async (page) => page)).rejects.toThrow(
         "Page 111 was connected without w_organization_social_feed, which react needs. " +
-          "Reconnect the Page in Settings.",
+          "An operator must connect the Page again.",
       );
       expect(world.linkedin.tokenCalls()).toHaveLength(1);
       expect(await statusOf("111")).toBe("active");

@@ -203,7 +203,7 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
       if (missing.length > 0) {
         throw new Error(
           `Page ${row.organization_id} was connected without ${missing.join(", ")}, which ${action} needs. ` +
-            "Reconnect the Page in Settings.",
+            "An operator must connect the Page again.",
         );
       }
       const accessToken = await accessTokenFor(ctx, companyId, creds, row, refreshes);
@@ -220,14 +220,14 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
           case "token_rejected":
             await markExpired(ctx, row.id);
             throw new Error(
-              `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). Reconnect the Page in Settings.`,
+              `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). An operator must connect the Page again.`,
             );
           case "access_denied":
             throw new Error(
               `LinkedIn refused ${action} as Page ${row.organization_id} (${err.message}). ` +
                 `The Page connection holds the scopes that the plugin requires for ${action}, so the authorizing ` +
                 "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
-                "Check both, then reconnect the Page in Settings.",
+                "An operator must examine both causes, then connect the Page again.",
             );
           case "rate_limited":
             throw new Error(
@@ -379,7 +379,7 @@ function requireSealingKey(dek: string): void {
   } catch (err) {
     throw new Error(
       `The Token Encryption Key (dekRef) cannot seal tokens: ${(err as Error).message}. ` +
-        "Correct it in Settings, then connect again.",
+        "Correct dekRef in the plugin config, then connect again.",
     );
   }
 }
@@ -404,8 +404,8 @@ function chosenOrganizationId(organizationRef: string | undefined, creds: Creden
   const organizationId = organizationIdOf(creds.defaultOrganizationRef);
   if (!organizationId) {
     throw new Error(
-      `The default Page ${creds.defaultOrganizationRef} in the plugin settings is not an organization id ` +
-        "or an Organization URN. Correct it in Settings.",
+      `The default Page ${creds.defaultOrganizationRef} is not an organization id or an Organization URN. ` +
+        "An operator must correct defaultOrganizationUrn in the plugin config.",
     );
   }
   return organizationId;
@@ -428,8 +428,8 @@ async function findConnection(
   if (rows.length === 0) {
     throw new Error(
       organizationId
-        ? `No active connection for organization ${organizationId}. Connect the Page in Settings first.`
-        : "No LinkedIn Page is connected for this company. Connect one in Settings first.",
+        ? `No active connection for organization ${organizationId}. An operator must connect the Page first.`
+        : "No LinkedIn Page is connected for this company. An operator must connect a Page first.",
     );
   }
   // Refuse to guess when several Pages are connected — posting to the wrong
@@ -437,7 +437,7 @@ async function findConnection(
   if (!organizationId && rows.length > 1) {
     throw new Error(
       "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-        "or set a default Page in the plugin settings.",
+        "or ask an operator to set the default Page (defaultOrganizationUrn) in the plugin config.",
     );
   }
   return rows[0]!;
@@ -479,7 +479,7 @@ async function refreshAccessToken(
   if (!row.refresh_token_sealed) {
     await markExpired(ctx, row.id);
     throw new Error(
-      `LinkedIn token for Page ${row.organization_id} expired and no refresh token is stored. Reconnect the Page in Settings.`,
+      `LinkedIn token for Page ${row.organization_id} expired and no refresh token is stored. An operator must connect the Page again.`,
     );
   }
 
@@ -496,7 +496,7 @@ async function refreshAccessToken(
     if (err instanceof LinkedInOAuthError && err.code === "invalid_grant") {
       await markExpired(ctx, row.id);
       throw new Error(
-        `Refreshing the LinkedIn token for Page ${row.organization_id} failed (${err.message}). Reconnect the Page in Settings.`,
+        `Refreshing the LinkedIn token for Page ${row.organization_id} failed (${err.message}). An operator must connect the Page again.`,
       );
     }
     throw new Error(
