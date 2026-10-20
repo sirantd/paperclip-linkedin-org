@@ -18,6 +18,10 @@ _Avoid_: org id, Page id
 The full LinkedIn identifier of a Page: `urn:li:organization:{organization id}`.
 _Avoid_: Page URN
 
+**Organization reference**:
+The organization id or the Organization URN of a Page. A tool call, the default Page setting and disconnect take either form. The Page connection interface reads it into the organization id once.
+_Avoid_: org ref
+
 **Authorizing member**:
 The LinkedIn member who approves the connection in the browser. This member must be an administrator of each Page that the plugin connects.
 _Avoid_: user, owner, admin

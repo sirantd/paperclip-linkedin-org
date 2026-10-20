@@ -47,7 +47,7 @@ unavailable, so the authorizing member URN is not recorded.
 | `redirectBaseUrl` | Public origin of this instance. Redirect URI is `{base}/api/plugins/sirantd.linkedin-org/api/oauth/callback?companyId={companyId}`. Register it in the LinkedIn app for each company: LinkedIn compares the full URI, query included. |
 | `clientIdRef` | Secret holding the app Client ID. |
 | `clientSecretRef` | Secret holding the Primary Client Secret. |
-| `defaultOrganizationUrn` | Optional. Used when a tool call omits `organizationId`. |
+| `defaultOrganizationUrn` | Optional. The Organization URN or the organization id of the Page that a tool call acts as when it omits `organizationId`. |
 
 Generate a DEK with:
 
@@ -65,6 +65,8 @@ openssl rand -base64 32
 | `linkedin-page-react` | React to a post as the Page. |
 | `linkedin-page-comment` | Comment on a post as the Page. |
 
+The `organizationId` parameter takes the organization id (`12345`) or the
+Organization URN (`urn:li:organization:12345`).
 If a tool call omits `organizationId`, the tool acts as the default Page, else
 the only active Page. If several Pages are active and no default Page is set,
 the call fails. A post to the wrong company Page is not a recoverable mistake.

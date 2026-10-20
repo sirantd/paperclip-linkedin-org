@@ -88,10 +88,43 @@ describe("actAs", () => {
       expect((await actAs("222")).organizationId).toBe("222");
     });
 
+    it("uses the Page that an Organization URN names", async () => {
+      await connect([ACME, GLOBEX]);
+      expect((await actAs("urn:li:organization:222")).organizationId).toBe("222");
+    });
+
+    it.each(["urn:li:share:1", "acme"])("refuses %s, which is not an organization reference", async (ref) => {
+      await connect([ACME]);
+      await expect(actAs(ref)).rejects.toThrow(
+        `${ref} is not an organization id or an Organization URN (urn:li:organization:{id}).`,
+      );
+    });
+
     it("uses the default Page when the call names none", async () => {
       world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs()).organizationId).toBe("222");
+    });
+
+    it("uses the default Page when the call names an empty reference", async () => {
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      await connect([ACME, GLOBEX]);
+      expect((await actAs("")).organizationId).toBe("222");
+    });
+
+    it("uses a default Page set as an organization id", async () => {
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "222" }));
+      await connect([ACME, GLOBEX]);
+      expect((await actAs()).organizationId).toBe("222");
+    });
+
+    it("names the setting when the default Page is not an organization reference", async () => {
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
+      await connect([ACME, GLOBEX]);
+      await expect(actAs()).rejects.toThrow(
+        "The default Page acme in the plugin settings is not an organization id or an Organization URN. " +
+          "Correct it in Settings.",
+      );
     });
 
     it("prefers the named Page over the default Page", async () => {
@@ -359,6 +392,11 @@ describe("startConnect", () => {
     );
   });
 
+  it("connects with a default Page that is not an organization reference", async () => {
+    world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
+    expect(await connect([ACME])).toHaveLength(1);
+  });
+
   it("trims secret values", async () => {
     world.secrets["client-id"] = "client-id\n";
     world.secrets["client-secret"] = "client-secret\n";
@@ -501,6 +539,19 @@ describe("disconnect", () => {
         where organization_id = '222'`,
     );
     expect(row).toEqual({ access_token_sealed: "", refresh_token_sealed: null });
+  });
+
+  it("revokes the Page that an Organization URN names", async () => {
+    await connect([ACME, GLOBEX]);
+    await pages.disconnect(world.companyId, "urn:li:organization:222");
+    expect(await statusOf("222")).toBe("revoked");
+  });
+
+  it("refuses a reference that is not an organization reference", async () => {
+    await connect([ACME]);
+    await expect(pages.disconnect(world.companyId, "acme")).rejects.toThrow(
+      "acme is not an organization id or an Organization URN (urn:li:organization:{id}).",
+    );
   });
 });
 

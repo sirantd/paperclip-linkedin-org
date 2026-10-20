@@ -1,7 +1,7 @@
 import type { EnvSecretRefBinding, PluginContext, ScopeKey } from "@paperclipai/plugin-sdk";
 import { openToken, sealToken } from "./crypto.js";
 import { buildAuthorizationUrl, exchangeCode, refreshTokens, type LinkedInTokens } from "./adapters/linkedin/auth.js";
-import { listAdministeredPages, type AdministeredPage } from "./adapters/linkedin/orgs.js";
+import { listAdministeredPages, organizationIdOf, type AdministeredPage } from "./adapters/linkedin/orgs.js";
 import {
   REQUESTED_SCOPES,
   grantedScopes,
@@ -42,13 +42,15 @@ export interface PageSummary {
  * The Page connections of each company: connect, act as a Page, list and
  * disconnect. Credentials, Page selection, token refresh and expiry, sealing
  * and storage stay behind this interface. Errors carry operator-facing text.
+ * An organization reference names a Page by its organization id or its
+ * Organization URN; this interface reads it into the organization id once.
  */
 export interface PageConnections {
   /**
    * Choose the acting Page and run `work` with it. The acting Page makes the
    * LinkedIn calls with a fresh access token; the token stays behind this
-   * interface. The Page is the named one, else the default Page, else the only
-   * active Page.
+   * interface. The Page is the one that `organizationRef` names, else the
+   * default Page, else the only active Page.
    * A Page connection without a scope that `action` needs refuses the action.
    * If LinkedIn rejects the token (401), the Page connection becomes expired.
    * A refusal (403) or a rate limit (429) keeps it active, with text that names
@@ -56,7 +58,7 @@ export interface PageConnections {
    */
   actAs<T>(
     companyId: string,
-    organizationId: string | undefined,
+    organizationRef: string | undefined,
     action: PageAction,
     work: (page: ActingPage) => Promise<T>,
   ): Promise<T>;
@@ -69,7 +71,8 @@ export interface PageConnections {
   ): Promise<{ authorizationUrl: string; scopes: readonly string[] }>;
   /** Finish connect: one active Page connection for each Page the authorizing member administers. */
   finishConnect(companyId: string, code: string, state: string, operatorId: string): Promise<AdministeredPage[]>;
-  disconnect(companyId: string, organizationId: string): Promise<void>;
+  /** Revoke the Page connection of the Page that `organizationRef` names. */
+  disconnect(companyId: string, organizationRef: string): Promise<void>;
 }
 
 /**
@@ -89,7 +92,8 @@ interface Credentials {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
-  defaultOrganizationId: string | null;
+  /** The organization reference of the default Page, as the operator set it. */
+  defaultOrganizationRef: string | null;
 }
 
 interface PageConnectionRow {
@@ -116,9 +120,9 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
   const refreshes = new Map<string, Promise<string>>();
 
   return {
-    async actAs(companyId, organizationId, action, work) {
+    async actAs(companyId, organizationRef, action, work) {
       const creds = await loadCredentials(ctx, companyId);
-      const row = await findConnection(ctx, companyId, organizationId ?? creds.defaultOrganizationId);
+      const row = await findConnection(ctx, companyId, chosenOrganizationId(organizationRef, creds));
       const missing = missingScopes(row.scopes, action);
       if (missing.length > 0) {
         throw new Error(
@@ -196,11 +200,11 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
       return completeOAuth(ctx, companyId, code, state, operatorId);
     },
 
-    async disconnect(companyId, organizationId) {
+    async disconnect(companyId, organizationRef) {
       await ctx.db.execute(
         `update ${table(ctx)} set status = 'revoked', access_token_sealed = '', refresh_token_sealed = null, updated_at = now()
           where company_id = $1 and organization_id = $2`,
-        [companyId, organizationId],
+        [companyId, requireOrganizationId(organizationRef)],
       );
     },
   };
@@ -230,14 +234,39 @@ async function loadCredentials(ctx: PluginContext, companyId: string): Promise<C
     redirectUri:
       `${config.redirectBaseUrl.replace(/\/+$/, "")}` +
       `/api/plugins/sirantd.linkedin-org/api/oauth/callback?companyId=${companyId}`,
-    defaultOrganizationId: config.defaultOrganizationUrn
-      ? (config.defaultOrganizationUrn.split(":").pop() ?? null)
-      : null,
+    defaultOrganizationRef: config.defaultOrganizationUrn || null,
   };
 }
 
 function table(ctx: PluginContext): string {
   return `${ctx.db.namespace}.page_connections`;
+}
+
+function requireOrganizationId(organizationRef: string): string {
+  const organizationId = organizationIdOf(organizationRef);
+  if (!organizationId) {
+    throw new Error(
+      `${organizationRef} is not an organization id or an Organization URN (urn:li:organization:{id}).`,
+    );
+  }
+  return organizationId;
+}
+
+/**
+ * The organization id of the named Page, else of the default Page, else null.
+ * Only actAs reads the default Page, so a wrong setting cannot block connect.
+ */
+function chosenOrganizationId(organizationRef: string | undefined, creds: Credentials): string | null {
+  if (organizationRef) return requireOrganizationId(organizationRef);
+  if (!creds.defaultOrganizationRef) return null;
+  const organizationId = organizationIdOf(creds.defaultOrganizationRef);
+  if (!organizationId) {
+    throw new Error(
+      `The default Page ${creds.defaultOrganizationRef} in the plugin settings is not an organization id ` +
+        "or an Organization URN. Correct it in Settings.",
+    );
+  }
+  return organizationId;
 }
 
 async function findConnection(
