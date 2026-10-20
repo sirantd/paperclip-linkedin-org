@@ -44,6 +44,8 @@ export interface PageConnections {
    * Page is the named one, else the default Page, else the only active Page.
    * A Page connection without a scope that `action` needs refuses the action.
    * If LinkedIn rejects the token (401), the Page connection becomes expired.
+   * A refusal (403) or a rate limit (429) keeps it active, with text that names
+   * the action and the Page.
    */
   actAs<T>(
     companyId: string,
@@ -126,11 +128,29 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
           accessToken,
         });
       } catch (err) {
-        if (!(err instanceof LinkedInApiError && err.status === 401)) throw err;
-        await markExpired(ctx, row.id);
-        throw new Error(
-          `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). Reconnect the Page in Settings.`,
-        );
+        if (!(err instanceof LinkedInApiError)) throw err;
+        switch (err.kind) {
+          case "token_rejected":
+            await markExpired(ctx, row.id);
+            throw new Error(
+              `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). Reconnect the Page in Settings.`,
+            );
+          case "access_denied":
+            throw new Error(
+              `LinkedIn refused ${action} as Page ${row.organization_id} (${err.message}). ` +
+                `The Page connection holds the scopes that the plugin requires for ${action}, so the authorizing ` +
+                "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
+                "Check both, then reconnect the Page in Settings.",
+            );
+          case "rate_limited":
+            throw new Error(
+              `LinkedIn refused ${action} as Page ${row.organization_id} because of its rate limit (${err.message}). ` +
+                "Try again later.",
+            );
+          default:
+            // A version sunset already names its fix; other errors carry the LinkedIn text.
+            throw err;
+        }
       }
     },
 

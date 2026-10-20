@@ -236,11 +236,35 @@ describe("actAs", () => {
       expect(await statusOf("111")).toBe("expired");
     });
 
-    it("passes other errors through and keeps the Page connection active", async () => {
+    it("names the action, the Page and the likely causes when LinkedIn refuses the action", async () => {
       await connect([ACME]);
       const denied = new LinkedInApiError(403, "LinkedIn react 403: ACCESS_DENIED");
 
-      await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(denied))).rejects.toBe(denied);
+      await expect(pages.actAs(world.companyId, undefined, "react", () => Promise.reject(denied))).rejects.toThrow(
+        "LinkedIn refused react as Page 111 (LinkedIn react 403: ACCESS_DENIED). " +
+          "The Page connection holds the scopes that the plugin requires for react, so the authorizing " +
+          "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
+          "Check both, then reconnect the Page in Settings.",
+      );
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it("names the rate limit and keeps the Page connection active", async () => {
+      await connect([ACME]);
+      const limited = new LinkedInApiError(429, "LinkedIn comment 429: TOO_MANY_REQUESTS");
+
+      await expect(pages.actAs(world.companyId, undefined, "comment", () => Promise.reject(limited))).rejects.toThrow(
+        "LinkedIn refused comment as Page 111 because of its rate limit (LinkedIn comment 429: TOO_MANY_REQUESTS). " +
+          "Try again later.",
+      );
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it.each([426, 500])("passes a %i through and keeps the Page connection active", async (status) => {
+      await connect([ACME]);
+      const failed = new LinkedInApiError(status, `LinkedIn publish ${status}: failed`);
+
+      await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(failed))).rejects.toBe(failed);
       expect(await statusOf("111")).toBe("active");
     });
   });

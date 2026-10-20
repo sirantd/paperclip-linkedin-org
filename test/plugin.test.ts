@@ -3,10 +3,12 @@ import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import plugin from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
+import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
 import {
   ACME,
   COMMENTS_URL,
   GLOBEX,
+  ORG_ACLS_URL,
   POSTS_URL,
   REACTIONS_URL,
   json,
@@ -143,6 +145,18 @@ describe("linkedin-page-post", () => {
     expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "expired" })]);
     expect(world.harness.activity).toEqual([]);
   });
+
+  it("names the developer action when LinkedIn retired the API version", async () => {
+    await connect([ACME]);
+    world.linkedin.on("POST", POSTS_URL, () => json({ code: "NONEXISTENT_VERSION" }, 426));
+
+    expect(await tool("linkedin-page-post", { text: "Hi" })).toEqual({
+      error:
+        `LinkedIn retired API version ${LINKEDIN_VERSION} (LinkedIn publish 426: {"code":"NONEXISTENT_VERSION"}). ` +
+        "Update LINKEDIN_VERSION and release the plugin. A reconnect does not help.",
+    });
+    expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "active" })]);
+  });
 });
 
 describe("linkedin-page-react", () => {
@@ -156,6 +170,18 @@ describe("linkedin-page-react", () => {
     const [req] = world.linkedin.requestsTo(REACTIONS_URL);
     expect(req!.url.searchParams.get("actor")).toBe("urn:li:organization:111");
     expect(JSON.parse(req!.body)).toEqual({ root: "urn:li:share:1", reactionType: "LIKE" });
+  });
+
+  it("names the action and the Page when LinkedIn refuses the reaction", async () => {
+    await connect([ACME]);
+    world.linkedin.on("POST", REACTIONS_URL, () => json({ code: "ACCESS_DENIED" }, 403));
+
+    const result = await tool("linkedin-page-react", { postUrn: "urn:li:share:1" });
+
+    expect(result).toEqual({
+      error: expect.stringMatching(/^LinkedIn refused react as Page 111 \(LinkedIn react 403: \{"code":"ACCESS_DENIED"\}\)\. /),
+    });
+    expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "active" })]);
   });
 });
 
@@ -293,6 +319,22 @@ describe("oauth-callback route", () => {
     expect(await route("oauth-callback", { query: { code: "code-1", state: "nope" } })).toEqual({
       status: 400,
       body: { outcome: "Could not connect the Page", detail: "Unknown or expired OAuth state" },
+    });
+  });
+
+  it("names the developer action when LinkedIn retired the API version", async () => {
+    world.linkedin.scriptConnect([ACME]);
+    world.linkedin.on("GET", ORG_ACLS_URL, () => json({ code: "NONEXISTENT_VERSION" }, 426));
+    const state = await startConnect();
+
+    expect(await route("oauth-callback", { query: { code: "code-1", state } })).toEqual({
+      status: 400,
+      body: {
+        outcome: "Could not connect the Page",
+        detail:
+          `LinkedIn retired API version ${LINKEDIN_VERSION} (organizationAcls 426: {"code":"NONEXISTENT_VERSION"}). ` +
+          "Update LINKEDIN_VERSION and release the plugin. A reconnect does not help.",
+      },
     });
   });
 });
