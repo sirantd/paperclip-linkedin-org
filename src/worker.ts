@@ -1,40 +1,14 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import type {
-  PluginContext,
-  PluginApiRequestInput,
-  PluginApiResponse,
-  PluginHttpClient,
-} from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginApiRequestInput, PluginApiResponse } from "@paperclipai/plugin-sdk";
 import {
   createPageConnections,
   type PageConnections,
   type PageSummary,
 } from "./page-connections.js";
-import {
-  commentAsOrganization,
-  publishAsOrganization,
-  reactAsOrganization,
-  type PostMedia,
-  type ReactionType,
-} from "./adapters/linkedin/publish.js";
-import {
-  ACCEPTED_FILES,
-  MAX_MEDIA_BYTES,
-  mediaKindForContentType,
-  mediaKindOfUrn,
-  mediaState,
-  requirePostable,
-  uploadMedia,
-} from "./adapters/linkedin/media.js";
+import type { ReactionType } from "./adapters/linkedin/publish.js";
+import { MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
 import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";
 import manifest from "./manifest.js";
-
-/**
- * The Node fetch, for the upload of file bytes only: ctx.http sends a body
- * that is not a string as String(body). This request skips the host tracing
- * and audit log. The lookup is at call time, so a test can replace fetch.
- */
-const nodeHttp: PluginHttpClient = { fetch: (url, init) => fetch(url, init) };
 
 /**
  * The host hands the live PluginContext to setup() only; onApiRequest() is a
@@ -99,21 +73,13 @@ const plugin = definePlugin({
           if (!file) {
             throw new Error(`Attachment ${p.attachmentId} was not found, or the plugin cannot read its issue.`);
           }
-          const kind = mediaKindForContentType(file.contentType);
-          if (!kind) throw new Error(`LinkedIn does not accept ${file.contentType}. Attach ${ACCEPTED_FILES}.`);
           const fileName = file.originalFilename ?? file.attachmentId;
 
           return await pages.actAs(run.companyId, p.organizationId, "upload", async (page) => {
-            const mediaUrn = await uploadMedia(ctx.http, nodeHttp, {
-              accessToken: page.accessToken,
-              organizationId: page.organizationId,
-              kind,
+            const { mediaUrn, status, kind } = await page.upload({
               contentType: file.contentType,
               bytes: Buffer.from(file.contentBase64, "base64"),
             });
-            // If this read fails, the uploaded file stays unused at LinkedIn. A post
-            // with the file needs the same read, so retrying the upload is the fix.
-            const { status } = await mediaState(ctx.http, { accessToken: page.accessToken, mediaUrn, kind });
             await ctx.activity.log({
               companyId: run.companyId,
               message: `Uploaded ${fileName} for ${page.displayName}`,
@@ -156,28 +122,11 @@ const plugin = definePlugin({
           altText?: string;
         };
         try {
-          const kind = p.mediaUrn ? mediaKindOfUrn(p.mediaUrn) : null;
-          if (p.mediaUrn && !kind) {
-            throw new Error(
-              `${p.mediaUrn} is not an image or a document. Pass the mediaUrn that linkedin-page-upload returned.`,
-            );
-          }
-          if (kind === "document" && !p.title) throw new Error("A post with a document needs a title.");
-          const media: PostMedia | undefined = p.mediaUrn
-            ? { id: p.mediaUrn, ...(p.title && { title: p.title }), ...(p.altText && { altText: p.altText }) }
-            : undefined;
-
           return await pages.actAs(run.companyId, p.organizationId, "post", async (page) => {
-            if (media && kind) {
-              const state = await mediaState(ctx.http, { accessToken: page.accessToken, mediaUrn: media.id, kind });
-              requirePostable(state, media.id, page.organizationUrn);
-            }
-            const result = await publishAsOrganization(ctx.http, {
-              accessToken: page.accessToken,
-              organizationId: page.organizationId,
+            const result = await page.post({
               text: p.text,
               visibility: p.visibility,
-              media,
+              media: p.mediaUrn ? { mediaUrn: p.mediaUrn, title: p.title, altText: p.altText } : undefined,
             });
             await ctx.activity.log({
               companyId: run.companyId,
@@ -186,7 +135,7 @@ const plugin = definePlugin({
               entityId: result.postUrn,
               metadata: {
                 postUrn: result.postUrn,
-                ...(media && { mediaUrn: media.id }),
+                ...(p.mediaUrn && { mediaUrn: p.mediaUrn }),
                 organizationId: page.organizationId,
                 agentId: run.agentId,
                 runId: run.runId,
@@ -210,12 +159,7 @@ const plugin = definePlugin({
         const p = params as { postUrn: string; organizationId?: string; reactionType?: ReactionType };
         try {
           return await pages.actAs(run.companyId, p.organizationId, "react", async (page) => {
-            await reactAsOrganization(ctx.http, {
-              accessToken: page.accessToken,
-              organizationId: page.organizationId,
-              postUrn: p.postUrn,
-              reactionType: p.reactionType,
-            });
+            await page.react(p.postUrn, p.reactionType);
             return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
           });
         } catch (err) {
@@ -231,12 +175,7 @@ const plugin = definePlugin({
         const p = params as { postUrn: string; text: string; organizationId?: string };
         try {
           return await pages.actAs(run.companyId, p.organizationId, "comment", async (page) => {
-            await commentAsOrganization(ctx.http, {
-              accessToken: page.accessToken,
-              organizationId: page.organizationId,
-              postUrn: p.postUrn,
-              text: p.text,
-            });
+            await page.comment(p.postUrn, p.text);
             return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
           });
         } catch (err) {

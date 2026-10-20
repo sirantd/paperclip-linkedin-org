@@ -7,6 +7,7 @@ import {
   ACME,
   GLOBEX,
   ONE_MINUTE_S,
+  REACTIONS_URL,
   SIXTY_DAYS_S,
   json,
   pluginConfig,
@@ -25,6 +26,7 @@ let pages: PageConnections;
 
 beforeEach(async () => {
   world = await createWorld();
+  world.linkedin.scriptActions();
   pages = createPageConnections(world.ctx);
 });
 
@@ -45,20 +47,33 @@ function actAs(organizationId?: string) {
   return pages.actAs(world.companyId, organizationId, "post", async (page) => page);
 }
 
+/** React once as the acting Page. */
+function react(organizationId?: string) {
+  return pages.actAs(world.companyId, organizationId, "react", (page) => page.react("urn:li:share:1"));
+}
+
+/** The token that the acting Page sent with each reaction, oldest first. */
+function reactionTokens() {
+  return world.linkedin.requestsTo(REACTIONS_URL).map((r) => r.headers.Authorization);
+}
+
 async function statusOf(organizationId: string) {
   return (await pages.list(world.companyId)).find((p) => p.organizationId === organizationId)?.status;
 }
 
 describe("actAs", () => {
-  it("returns the acting Page with the stored token while it is valid", async () => {
+  it("acts as the Page with the stored token while it is valid", async () => {
     await connect([ACME]);
 
-    expect(await actAs()).toEqual({
+    const page = await actAs();
+    expect(page).toMatchObject({
       organizationId: "111",
       organizationUrn: "urn:li:organization:111",
       displayName: "Acme",
-      accessToken: "access-1",
     });
+    expect(page).not.toHaveProperty("accessToken");
+    await react();
+    expect(reactionTokens()).toEqual(["Bearer access-1"]);
     expect(world.linkedin.tokenCalls()).toHaveLength(1);
   });
 
@@ -118,9 +133,10 @@ describe("actAs", () => {
         tokenResponse({ access_token: "access-2", expires_in: SIXTY_DAYS_S, refresh_token: undefined }),
       );
 
-      expect((await actAs()).accessToken).toBe("access-2");
-      expect((await actAs()).accessToken).toBe("access-2");
+      await react();
+      await react();
 
+      expect(reactionTokens()).toEqual(["Bearer access-2", "Bearer access-2"]);
       expect(world.linkedin.tokenCalls()).toHaveLength(2);
       expect(Object.fromEntries(world.linkedin.tokenCalls()[1]!)).toEqual({
         grant_type: "refresh_token",
@@ -152,9 +168,9 @@ describe("actAs", () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S });
       world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
 
-      const acting = await Promise.all([actAs(), actAs()]);
+      await Promise.all([react(), react()]);
 
-      expect(acting.map((page) => page.accessToken)).toEqual(["access-2", "access-2"]);
+      expect(reactionTokens()).toEqual(["Bearer access-2", "Bearer access-2"]);
       expect(world.linkedin.tokenCalls().map((call) => call.get("grant_type"))).toEqual([
         "authorization_code",
         "refresh_token",
@@ -215,7 +231,8 @@ describe("actAs", () => {
 
       world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
 
-      expect((await actAs()).accessToken).toBe("access-2");
+      await react();
+      expect(reactionTokens()).toEqual(["Bearer access-2"]);
     });
   });
 
@@ -409,7 +426,8 @@ describe("finishConnect", () => {
     await connect([ACME], { access_token: "access-2" });
 
     expect((await pages.list(world.companyId)).map((p) => [p.organizationId, p.status])).toEqual([["111", "active"]]);
-    expect((await actAs()).accessToken).toBe("access-2");
+    await react();
+    expect(reactionTokens()).toEqual(["Bearer access-2"]);
   });
 
   it("rejects an unknown OAuth state", async () => {
