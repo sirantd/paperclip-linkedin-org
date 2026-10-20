@@ -10,6 +10,8 @@ import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 /** The schema the migration names directly; see migrations/0001_pages.sql. */
 const NAMESPACE = "plugin_linkedin_org_670c26f221";
 const MIGRATION = readFileSync(new URL("../migrations/0001_pages.sql", import.meta.url), "utf8");
+/** The Postgres type OID of text[]. */
+const TEXT_ARRAY_OID = 1009;
 
 export const TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
 export const ORG_ACLS_URL = "https://api.linkedin.com/rest/organizationAcls";
@@ -227,6 +229,11 @@ export interface World {
   dek: string;
   /** Raw SQL against the plugin schema, for at-rest setup and assertions only. */
   sql<T = Record<string, unknown>>(statement: string, params?: unknown[]): Promise<T[]>;
+  /**
+   * The form of a text[] value in the rows of ctx.db.query: "array", or "text"
+   * for the Postgres array text (`{a,b}`) of a host driver without array parsing.
+   */
+  textArrays: "array" | "text";
   /** Add a company row so page_connections can reference it. */
   addCompany(): Promise<string>;
   /** Free the PGLite clone. Each clone holds hundreds of MB until it is closed. */
@@ -270,7 +277,12 @@ export async function createWorld(): Promise<World> {
   Object.assign(harness.ctx, {
     db: {
       namespace: NAMESPACE,
-      query: sql,
+      // The host sends query rows to the worker through JSON-RPC, so a
+      // timestamp arrives as an ISO string.
+      async query<T>(statement: string, params?: unknown[]): Promise<T[]> {
+        const options = world.textArrays === "text" ? { parsers: { [TEXT_ARRAY_OID]: (text: string) => text } } : {};
+        return wire((await pg.query<T>(statement, params, options)).rows) as T[];
+      },
       async execute(statement: string, params?: unknown[]) {
         const result = await pg.query(statement, params);
         return { rowCount: result.affectedRows ?? 0 };
@@ -300,7 +312,20 @@ export async function createWorld(): Promise<World> {
 
   const close = () => pg.close();
 
-  return { harness, ctx: harness.ctx, linkedin, companyId, configs, secrets, dek, sql, addCompany, close };
+  const world: World = {
+    harness,
+    ctx: harness.ctx,
+    linkedin,
+    companyId,
+    configs,
+    secrets,
+    dek,
+    sql,
+    textArrays: "array",
+    addCompany,
+    close,
+  };
+  return world;
 }
 
 /**
