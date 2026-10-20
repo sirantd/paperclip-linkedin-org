@@ -85,6 +85,11 @@ function reactionTokens() {
   return world.linkedin.requestsTo(REACTIONS_URL).map((r) => r.headers.Authorization);
 }
 
+/** The logged warnings about the deprecated key of the default Page. */
+function deprecatedKeyWarnings() {
+  return world.harness.logs.filter((log) => log.level === "warn" && log.message.includes("defaultOrganizationUrn"));
+}
+
 async function statusOf(organizationId: string) {
   return (await pages.list(world.companyId)).find((p) => p.organizationId === organizationId)?.status;
 }
@@ -129,34 +134,65 @@ describe("actAs", () => {
     });
 
     it("uses the default Page when the call names none", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs()).organizationId).toBe("222");
+      expect(deprecatedKeyWarnings()).toEqual([]);
     });
 
     it("uses the default Page when the call names an empty reference", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs("")).organizationId).toBe("222");
     });
 
     it("uses a default Page set as an organization id", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs()).organizationId).toBe("222");
     });
 
-    it("names the setting when the default Page is not an organization reference", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
+    it("uses the deprecated key defaultOrganizationUrn and warns once", async () => {
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
-      await expect(actAs()).rejects.toThrow(
-        "The default Page acme is not an organization id or an Organization URN. " +
-          "An operator must correct defaultOrganizationUrn in the plugin config.",
-      );
+
+      expect((await actAs()).organizationId).toBe("222");
+      expect((await actAs()).organizationId).toBe("222");
+      expect(deprecatedKeyWarnings()).toEqual([
+        {
+          level: "warn",
+          message:
+            "The default Page uses the deprecated config key defaultOrganizationUrn. " +
+            "Move its value to defaultOrganization.",
+          meta: { companyId: world.companyId },
+        },
+      ]);
     });
 
+    it("prefers defaultOrganization over defaultOrganizationUrn and does not warn", async () => {
+      world.configs.set(
+        world.companyId,
+        pluginConfig({ defaultOrganization: "222", defaultOrganizationUrn: "urn:li:organization:111" }),
+      );
+      await connect([ACME, GLOBEX]);
+      expect((await actAs()).organizationId).toBe("222");
+      expect(deprecatedKeyWarnings()).toEqual([]);
+    });
+
+    it.each(["defaultOrganization", "defaultOrganizationUrn"])(
+      "names %s when its default Page is not an organization reference",
+      async (key) => {
+        world.configs.set(world.companyId, pluginConfig({ [key]: "acme" }));
+        await connect([ACME, GLOBEX]);
+        await expect(actAs()).rejects.toThrow(
+          "The default Page acme is not an organization id or an Organization URN. " +
+            `An operator must correct ${key} in the plugin config.`,
+        );
+      },
+    );
+
     it("prefers the named Page over the default Page", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs("111")).organizationId).toBe("111");
     });
@@ -165,7 +201,7 @@ describe("actAs", () => {
       await connect([ACME, GLOBEX]);
       await expect(actAs()).rejects.toThrow(
         "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-          "or ask an operator to set the default Page (defaultOrganizationUrn) in the plugin config.",
+          "or ask an operator to set the default Page (defaultOrganization) in the plugin config.",
       );
     });
 
@@ -476,7 +512,7 @@ describe("startConnect", () => {
   });
 
   it("connects with a default Page that is not an organization reference", async () => {
-    world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
+    world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "acme" }));
     expect(await connect([ACME])).toHaveLength(1);
   });
 

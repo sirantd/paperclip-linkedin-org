@@ -295,7 +295,7 @@ describe("linkedin-page-post", () => {
     expect(await tool("linkedin-page-post", { text: "Hi" })).toEqual({
       error:
         "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-        "or ask an operator to set the default Page (defaultOrganizationUrn) in the plugin config.",
+        "or ask an operator to set the default Page (defaultOrganization) in the plugin config.",
     });
     expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
   });

@@ -66,11 +66,18 @@ const instanceConfigSchema: JsonSchema = {
       "LinkedIn Primary Client Secret",
       "Secret holding the Primary Client Secret for the same LinkedIn app.",
     ),
+    defaultOrganization: {
+      type: "string",
+      title: "Default Page (organization id or URN)",
+      description:
+        "Optional. The organization id or urn:li:organization:{id}, used when an agent calls a tool without naming a Page. Connect does not set it. Set it in the plugin config after you connect the Page.",
+    },
+    // Kept so that a saved config stays valid.
     defaultOrganizationUrn: {
       type: "string",
-      title: "Default Page (organization URN or id)",
+      title: "Default Page (deprecated)",
       description:
-        "Optional. urn:li:organization:{id} or the organization id, used when an agent calls a tool without naming a page. Connect does not set it. Set it in the plugin config after you connect the Page.",
+        "Deprecated. Use defaultOrganization. This key applies only when defaultOrganization is not set.",
     },
   },
 };

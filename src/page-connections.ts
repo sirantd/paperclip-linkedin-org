@@ -133,11 +133,25 @@ interface PluginConfigShape {
   redirectBaseUrl: string;
   clientIdRef: EnvSecretRefBinding;
   clientSecretRef: EnvSecretRefBinding;
+  /** The organization reference of the default Page. */
+  defaultOrganization?: string;
+  /** Deprecated: the earlier key of defaultOrganization. */
   defaultOrganizationUrn?: string;
 }
 
 /** The secret fields of PluginConfigShape. */
 type SecretPath = "dekRef" | "clientIdRef" | "clientSecretRef";
+
+/** The config keys of the default Page. The first key with a value applies. */
+const DEFAULT_PAGE_KEYS = ["defaultOrganization", "defaultOrganizationUrn"] as const;
+
+/** The default Page as the operator set it. */
+interface DefaultPage {
+  /** The organization reference. */
+  ref: string;
+  /** The config key that holds it. */
+  key: (typeof DEFAULT_PAGE_KEYS)[number];
+}
 
 interface ClientCredentials {
   clientId: string;
@@ -147,8 +161,7 @@ interface ClientCredentials {
 interface Credentials {
   dek: string;
   redirectUri: string;
-  /** The organization reference of the default Page, as the operator set it. */
-  defaultOrganizationRef: string | null;
+  defaultPage: DefaultPage | null;
   /**
    * Resolve the Client ID and the Client Secret. Only connect and a token
    * refresh need them, so a token that is still valid needs only the DEK.
@@ -199,16 +212,26 @@ interface PendingConnect {
   actorId: string;
 }
 
+/** actAs logs this once for each company and worker process. */
+const DEPRECATED_KEY_WARNING =
+  "The default Page uses the deprecated config key defaultOrganizationUrn. Move its value to defaultOrganization.";
+
 /** The refusals that are faults of LinkedIn or of the plugin; finishConnect logs them. */
 const CONNECT_FAULTS: ReadonlySet<ConnectRefusal> = new Set(["linkedin_failed", "plugin_failed"]);
 
 export function createPageConnections(ctx: PluginContext, fileTransport?: FileTransport): PageConnections {
   /** The refresh in progress for each Page connection, by row id; concurrent calls share it. */
   const refreshes = new Map<string, Promise<string>>();
+  /** The companies that got the warning about the deprecated key of the default Page. */
+  const warnedOfDeprecatedKey = new Set<string>();
 
   return {
     async actAs(companyId, organizationRef, action, work) {
       const creds = await loadCredentials(ctx, companyId);
+      if (creds.defaultPage?.key === "defaultOrganizationUrn" && !warnedOfDeprecatedKey.has(companyId)) {
+        warnedOfDeprecatedKey.add(companyId);
+        ctx.logger.warn(DEPRECATED_KEY_WARNING, { companyId });
+      }
       const row = await findConnection(ctx, companyId, chosenOrganizationId(organizationRef, creds));
       const missing = missingScopes(row.scopes, action);
       if (missing.length > 0) {
@@ -324,8 +347,17 @@ async function loadCredentials(ctx: PluginContext, companyId: string): Promise<C
     redirectUri:
       `${config.redirectBaseUrl.replace(/\/+$/, "")}` +
       `/api/plugins/${manifest.id}/api/oauth/callback?companyId=${companyId}`,
-    defaultOrganizationRef: config.defaultOrganizationUrn || null,
+    defaultPage: defaultPageOf(config),
   };
+}
+
+/** The default Page of the config. If both keys are set, defaultOrganization wins. */
+function defaultPageOf(config: PluginConfigShape): DefaultPage | null {
+  for (const key of DEFAULT_PAGE_KEYS) {
+    const ref = config[key];
+    if (ref) return { ref, key };
+  }
+  return null;
 }
 
 function table(ctx: PluginContext): string {
@@ -410,12 +442,13 @@ function requireOrganizationId(organizationRef: string): string {
  */
 function chosenOrganizationId(organizationRef: string | undefined, creds: Credentials): string | null {
   if (organizationRef) return requireOrganizationId(organizationRef);
-  if (!creds.defaultOrganizationRef) return null;
-  const organizationId = organizationIdOf(creds.defaultOrganizationRef);
+  if (!creds.defaultPage) return null;
+  const { ref, key } = creds.defaultPage;
+  const organizationId = organizationIdOf(ref);
   if (!organizationId) {
     throw new Error(
-      `The default Page ${creds.defaultOrganizationRef} is not an organization id or an Organization URN. ` +
-        "An operator must correct defaultOrganizationUrn in the plugin config.",
+      `The default Page ${ref} is not an organization id or an Organization URN. ` +
+        `An operator must correct ${key} in the plugin config.`,
     );
   }
   return organizationId;
@@ -447,7 +480,7 @@ async function findConnection(
   if (!organizationId && rows.length > 1) {
     throw new Error(
       "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-        "or ask an operator to set the default Page (defaultOrganizationUrn) in the plugin config.",
+        "or ask an operator to set the default Page (defaultOrganization) in the plugin config.",
     );
   }
   return rows[0]!;
