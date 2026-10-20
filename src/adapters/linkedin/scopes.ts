@@ -1,4 +1,4 @@
-/** An action that an agent does as a Page. */
+/** An action that an agent does as a Page, with the agent tool `linkedin-page-{action}`. */
 export type PageAction = "post" | "react" | "comment" | "upload";
 
 /**

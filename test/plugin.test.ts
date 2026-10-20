@@ -18,7 +18,6 @@ import {
   routeInput,
   wire,
   createWorld,
-  revertToGrantBeforeFeedScopes,
   seedAttachment,
   type FakePage,
   type World,
@@ -115,24 +114,25 @@ describe("agent tools", () => {
     }
   });
 
-  it("checks the scopes of the action that each tool does", async () => {
+  it.each([
+    ["linkedin-page-post", "post", "w_organization_social", { text: "Hi" }],
+    ["linkedin-page-upload", "upload", "w_organization_social", { attachmentId: "attachment-1" }],
+    ["linkedin-page-react", "react", "w_organization_social, w_organization_social_feed", { postUrn: "urn:li:share:1" }],
+    [
+      "linkedin-page-comment",
+      "comment",
+      "w_organization_social, w_organization_social_feed",
+      { postUrn: "urn:li:share:1", text: "Nice" },
+    ],
+  ] as const)("%s checks the scopes of %s before any other step", async (name, action, missing, params) => {
     await connect([ACME]);
-    await revertToGrantBeforeFeedScopes(world);
-    world.linkedin.scriptActions();
+    await world.sql(`update ${world.ctx.db.namespace}.page_connections set scopes = '{rw_organization_admin}'`);
+    const before = world.linkedin.requests.length;
 
-    expect(await tool("linkedin-page-post", { text: "Hi" })).toHaveProperty("content");
-    for (const [name, action] of [
-      ["linkedin-page-react", "react"],
-      ["linkedin-page-comment", "comment"],
-    ] as const) {
-      expect(await tool(name, { postUrn: "urn:li:share:1", text: "Nice" })).toEqual({
-        error:
-          `Page 111 was connected without w_organization_social_feed, which ${action} needs. ` +
-          "Reconnect the Page in Settings.",
-      });
-    }
-    expect(world.linkedin.requestsTo(REACTIONS_URL)).toHaveLength(0);
-    expect(world.linkedin.requestsTo(COMMENTS_URL)).toHaveLength(0);
+    expect(await tool(name, params)).toEqual({
+      error: `Page 111 was connected without ${missing}, which ${action} needs. Reconnect the Page in Settings.`,
+    });
+    expect(world.linkedin.requests).toHaveLength(before);
   });
 });
 

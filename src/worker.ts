@@ -1,11 +1,19 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import type { PluginContext, PluginApiRequestInput, PluginApiResponse } from "@paperclipai/plugin-sdk";
+import type {
+  PluginContext,
+  PluginApiRequestInput,
+  PluginApiResponse,
+  ToolResult,
+  ToolRunContext,
+} from "@paperclipai/plugin-sdk";
 import {
   createPageConnections,
+  type ActingPage,
   type PageConnections,
   type PageSummary,
 } from "./page-connections.js";
 import type { ReactionType } from "./adapters/linkedin/publish.js";
+import type { PageAction } from "./adapters/linkedin/scopes.js";
 import { MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
 import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";
 import manifest from "./manifest.js";
@@ -61,128 +69,102 @@ const plugin = definePlugin({
       },
     );
 
-    ctx.tools.register(
-      "linkedin-page-upload",
-      declared("linkedin-page-upload"),
-      async (params, run) => {
-        const p = params as { attachmentId: string; organizationId?: string };
+    /**
+     * Register the agent tool `linkedin-page-{action}`. Each call does `action`
+     * as the Page that its organizationId names, and a failure becomes the
+     * tool error.
+     */
+    function pageTool<P>(
+      action: PageAction,
+      work: (page: ActingPage, params: P, run: ToolRunContext) => Promise<ToolResult>,
+    ): void {
+      const name = `linkedin-page-${action}`;
+      ctx.tools.register(name, declared(name), async (params, run) => {
+        const p = params as P & { organizationId?: string };
         try {
-          const file = await ctx.issues.getAttachmentContent(p.attachmentId, run.companyId, {
-            maxBytes: MAX_MEDIA_BYTES,
-          });
-          if (!file) {
-            throw new Error(`Attachment ${p.attachmentId} was not found, or the plugin cannot read its issue.`);
-          }
-          const fileName = file.originalFilename ?? file.attachmentId;
-
-          return await pages.actAs(run.companyId, p.organizationId, "upload", async (page) => {
-            const { mediaUrn, status, kind } = await page.upload({
-              contentType: file.contentType,
-              bytes: Buffer.from(file.contentBase64, "base64"),
-            });
-            await ctx.activity.log({
-              companyId: run.companyId,
-              message: `Uploaded ${fileName} for ${page.displayName}`,
-              entityType: "linkedin_page_media",
-              entityId: mediaUrn,
-              metadata: {
-                mediaUrn,
-                attachmentId: file.attachmentId,
-                sha256: file.sha256,
-                contentType: file.contentType,
-                byteSize: file.byteSize,
-                organizationId: page.organizationId,
-                agentId: run.agentId,
-                runId: run.runId,
-              },
-            });
-            return {
-              content:
-                `Uploaded ${fileName} for ${page.displayName} as ${mediaUrn} (${status}). ` +
-                `Pass mediaUrn to linkedin-page-post${kind === "document" ? " with a title" : ""}.`,
-              data: { mediaUrn, status, kind, originalFilename: file.originalFilename },
-            };
-          });
+          return await pages.actAs(run.companyId, p.organizationId, action, (page) => work(page, p, run));
         } catch (err) {
           return { error: (err as Error).message };
         }
-      },
-    );
+      });
+    }
 
-    ctx.tools.register(
-      "linkedin-page-post",
-      declared("linkedin-page-post"),
-      async (params, run) => {
-        const p = params as {
-          text: string;
-          organizationId?: string;
-          visibility?: "PUBLIC" | "LOGGED_IN";
-          mediaUrn?: string;
-          title?: string;
-          altText?: string;
-        };
-        try {
-          return await pages.actAs(run.companyId, p.organizationId, "post", async (page) => {
-            const result = await page.post({
-              text: p.text,
-              visibility: p.visibility,
-              media: p.mediaUrn ? { mediaUrn: p.mediaUrn, title: p.title, altText: p.altText } : undefined,
-            });
-            await ctx.activity.log({
-              companyId: run.companyId,
-              message: `Posted as ${page.displayName}`,
-              entityType: "linkedin_page_post",
-              entityId: result.postUrn,
-              metadata: {
-                postUrn: result.postUrn,
-                ...(p.mediaUrn && { mediaUrn: p.mediaUrn }),
-                organizationId: page.organizationId,
-                agentId: run.agentId,
-                runId: run.runId,
-              },
-            });
-            return {
-              content: `Published as ${page.displayName}: ${result.permalink ?? result.postUrn}`,
-              data: result,
-            };
-          });
-        } catch (err) {
-          return { error: (err as Error).message };
-        }
-      },
-    );
+    pageTool<{ attachmentId: string }>("upload", async (page, p, run) => {
+      const file = await ctx.issues.getAttachmentContent(p.attachmentId, run.companyId, {
+        maxBytes: MAX_MEDIA_BYTES,
+      });
+      if (!file) {
+        throw new Error(`Attachment ${p.attachmentId} was not found, or the plugin cannot read its issue.`);
+      }
+      const fileName = file.originalFilename ?? file.attachmentId;
+      const { mediaUrn, status, kind } = await page.upload({
+        contentType: file.contentType,
+        bytes: Buffer.from(file.contentBase64, "base64"),
+      });
+      await ctx.activity.log({
+        companyId: run.companyId,
+        message: `Uploaded ${fileName} for ${page.displayName}`,
+        entityType: "linkedin_page_media",
+        entityId: mediaUrn,
+        metadata: {
+          mediaUrn,
+          attachmentId: file.attachmentId,
+          sha256: file.sha256,
+          contentType: file.contentType,
+          byteSize: file.byteSize,
+          organizationId: page.organizationId,
+          agentId: run.agentId,
+          runId: run.runId,
+        },
+      });
+      return {
+        content:
+          `Uploaded ${fileName} for ${page.displayName} as ${mediaUrn} (${status}). ` +
+          `Pass mediaUrn to linkedin-page-post${kind === "document" ? " with a title" : ""}.`,
+        data: { mediaUrn, status, kind, originalFilename: file.originalFilename },
+      };
+    });
 
-    ctx.tools.register(
-      "linkedin-page-react",
-      declared("linkedin-page-react"),
-      async (params, run) => {
-        const p = params as { postUrn: string; organizationId?: string; reactionType?: ReactionType };
-        try {
-          return await pages.actAs(run.companyId, p.organizationId, "react", async (page) => {
-            await page.react(p.postUrn, p.reactionType);
-            return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
-          });
-        } catch (err) {
-          return { error: (err as Error).message };
-        }
-      },
-    );
+    pageTool<{
+      text: string;
+      visibility?: "PUBLIC" | "LOGGED_IN";
+      mediaUrn?: string;
+      title?: string;
+      altText?: string;
+    }>("post", async (page, p, run) => {
+      const result = await page.post({
+        text: p.text,
+        visibility: p.visibility,
+        media: p.mediaUrn ? { mediaUrn: p.mediaUrn, title: p.title, altText: p.altText } : undefined,
+      });
+      await ctx.activity.log({
+        companyId: run.companyId,
+        message: `Posted as ${page.displayName}`,
+        entityType: "linkedin_page_post",
+        entityId: result.postUrn,
+        metadata: {
+          postUrn: result.postUrn,
+          ...(p.mediaUrn && { mediaUrn: p.mediaUrn }),
+          organizationId: page.organizationId,
+          agentId: run.agentId,
+          runId: run.runId,
+        },
+      });
+      return {
+        content: `Published as ${page.displayName}: ${result.permalink ?? result.postUrn}`,
+        data: result,
+      };
+    });
 
-    ctx.tools.register(
-      "linkedin-page-comment",
-      declared("linkedin-page-comment"),
-      async (params, run) => {
-        const p = params as { postUrn: string; text: string; organizationId?: string };
-        try {
-          return await pages.actAs(run.companyId, p.organizationId, "comment", async (page) => {
-            await page.comment(p.postUrn, p.text);
-            return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
-          });
-        } catch (err) {
-          return { error: (err as Error).message };
-        }
-      },
-    );
+    pageTool<{ postUrn: string; reactionType?: ReactionType }>("react", async (page, p) => {
+      await page.react(p.postUrn, p.reactionType);
+      return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
+    });
+
+    pageTool<{ postUrn: string; text: string }>("comment", async (page, p) => {
+      await page.comment(p.postUrn, p.text);
+      return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
+    });
   },
 
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
