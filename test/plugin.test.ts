@@ -13,6 +13,7 @@ import {
   ORG_ACLS_URL,
   POSTS_URL,
   REACTIONS_URL,
+  TOKEN_URL,
   UPLOAD_URL,
   json,
   routeInput,
@@ -570,6 +571,20 @@ describe("finish routes", () => {
     expect(await route("oauth-complete", { body: { code: "code-1", state: await startConnect() } })).toEqual({
       status: 502,
       body: { error: reason, kind: "linkedin_failed" },
+    });
+  });
+
+  it("answer 500 when LinkedIn refuses the client", async () => {
+    world.linkedin.scriptConnect([ACME]);
+    world.linkedin.on("POST", TOKEN_URL, () => json({ error: "invalid_client" }, 401));
+
+    expect(await route("oauth-callback", { query: { code: "code-1", state: await startConnect() } })).toMatchObject({
+      status: 500,
+      body: { detail: expect.stringContaining("Primary Client Secret") },
+    });
+    expect(await route("oauth-complete", { body: { code: "code-1", state: await startConnect() } })).toMatchObject({
+      status: 500,
+      body: { kind: "plugin_failed" },
     });
   });
 });

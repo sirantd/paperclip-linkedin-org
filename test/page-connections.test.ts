@@ -668,7 +668,6 @@ describe("finishConnect", () => {
   describe("faults", () => {
     it.each([
       ["a LinkedIn outage", () => json({ message: "Service Unavailable" }, 503)],
-      ["a wrong Client Secret", () => json({ error: "invalid_client" }, 401)],
       [
         "a network error",
         () => {
@@ -684,6 +683,28 @@ describe("finishConnect", () => {
       expect(outcome).toEqual({
         kind: "linkedin_failed",
         reason: expect.stringMatching(/^LinkedIn did not exchange the authorization code \(.+\)\.$/s),
+      });
+      expect(world.harness.logs).toContainEqual({
+        level: "error",
+        message: "LinkedIn Page connect failed",
+        meta: { companyId: world.companyId, ...outcome },
+      });
+      expect(await pages.list(world.companyId)).toEqual([]);
+    });
+
+    it("reports a client that LinkedIn refuses as a plugin failure that names the Client Secret", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      world.linkedin.on("POST", TOKEN_URL, () => json({ error: "invalid_client" }, 401));
+
+      const outcome = await finish({ code: "code-1", state: await startConnect() });
+
+      expect(outcome).toEqual({
+        kind: "plugin_failed",
+        reason:
+          'LinkedIn refused the client credentials of the plugin (LinkedIn token endpoint 401: {"error":"invalid_client"} — ' +
+          "client_id is valid if authorization succeeded, so this points at the stored Client Secret: " +
+          "confirm it matches the app's current Primary Client Secret.). " +
+          "Correct clientIdRef or clientSecretRef in Settings, then connect again.",
       });
       expect(world.harness.logs).toContainEqual({
         level: "error",

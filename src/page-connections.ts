@@ -64,9 +64,9 @@ export type ConnectRefusal =
   | "grant_refused"
   /** The authorizing member administers no Page. */
   | "no_page"
-  /** The token endpoint or a LinkedIn call failed. */
+  /** The token endpoint or a LinkedIn call failed. A refused Client ID or Client Secret is plugin_failed. */
   | "linkedin_failed"
-  /** The plugin settings, the DEK or the database failed. */
+  /** The plugin settings (a Client ID or a Client Secret that LinkedIn refused too), the DEK or the database failed. */
   | "plugin_failed";
 
 /** The result of one finish of connect: the connected Pages, or a refusal with operator-facing text. */
@@ -581,6 +581,15 @@ async function completeOAuth(
       return {
         kind: "code_refused",
         reason: `LinkedIn refused the authorization code (${err.message}). Start connect again.`,
+      };
+    }
+    if (err instanceof LinkedInOAuthError && err.code === "invalid_client") {
+      // A settings fault: the message of auth.ts names the Client Secret.
+      return {
+        kind: "plugin_failed",
+        reason:
+          `LinkedIn refused the client credentials of the plugin (${err.message}). ` +
+          "Correct clientIdRef or clientSecretRef in Settings, then connect again.",
       };
     }
     return {
