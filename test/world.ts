@@ -137,10 +137,25 @@ export class FakeLinkedIn {
     );
   }
 
+  /**
+   * Answer a post, a reaction and a comment as LinkedIn documents them. A post
+   * returns `postUrn` in a header. A reaction returns its URN in the body. A
+   * comment returns the comment id `1` in a header and its URN in the body.
+   */
   scriptActions(postUrn = "urn:li:share:9"): void {
     this.on("POST", POSTS_URL, () => new Response(null, { status: 201, headers: { "x-restli-id": postUrn } }));
-    this.on("POST", REACTIONS_URL, () => new Response(null, { status: 201 }));
-    this.on("POST", COMMENTS_URL, () => json({}, 201));
+    this.on("POST", REACTIONS_URL, (req) => {
+      const { root, reactionType } = JSON.parse(req.body) as { root: string; reactionType: string };
+      const actor = req.url.searchParams.get("actor");
+      return json({ id: `urn:li:reaction:(${actor},${root})`, root, reactionType }, 201);
+    });
+    this.on("POST", COMMENTS_URL, (req) => {
+      const { actor, object, message } = JSON.parse(req.body) as { actor: string; object: string; message: unknown };
+      return new Response(
+        JSON.stringify({ actor, object, message, id: "1", commentUrn: `urn:li:comment:(${object},1)` }),
+        { status: 201, headers: { "Content-Type": "application/json", "x-restli-id": "1" } },
+      );
+    });
   }
 
   /**

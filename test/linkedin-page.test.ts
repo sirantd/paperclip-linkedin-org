@@ -123,10 +123,13 @@ describe("post", () => {
 });
 
 describe("react", () => {
-  it("reacts as the Page, with LIKE when no type is given", async () => {
+  it("reacts as the Page, with LIKE when no type is given, and returns the reaction URN", async () => {
     linkedin.scriptActions();
 
-    await page.react("urn:li:share:1");
+    expect(await page.react("urn:li:share:1")).toEqual({
+      reactionUrn: "urn:li:reaction:(urn:li:organization:111,urn:li:share:1)",
+      reactionType: "LIKE",
+    });
 
     const [req] = linkedin.requestsTo(REACTIONS_URL);
     expect(req!.headers.Authorization).toBe("Bearer access-1");
@@ -134,18 +137,24 @@ describe("react", () => {
     expect(JSON.parse(req!.body)).toEqual({ root: "urn:li:share:1", reactionType: "LIKE" });
   });
 
-  it.each([409, 422])("counts a reaction that exists already (%i) as done", async (status) => {
+  it.each([409, 422])("counts a reaction that exists already (%i) as done, with no reaction URN", async (status) => {
     linkedin.on("POST", REACTIONS_URL, () => json({ code: "DUPLICATE_REACTION" }, status));
 
-    await expect(page.react("urn:li:share:1", "PRAISE")).resolves.toBeUndefined();
+    expect(await page.react("urn:li:share:1", "PRAISE")).toEqual({ reactionUrn: null, reactionType: "PRAISE" });
+  });
+
+  it("returns no reaction URN when LinkedIn sends no body", async () => {
+    linkedin.on("POST", REACTIONS_URL, () => new Response(null, { status: 201 }));
+
+    expect(await page.react("urn:li:share:1")).toEqual({ reactionUrn: null, reactionType: "LIKE" });
   });
 });
 
 describe("comment", () => {
-  it("comments as the Page", async () => {
+  it("comments as the Page and returns the comment URN", async () => {
     linkedin.scriptActions();
 
-    await page.comment("urn:li:share:1", "Nice");
+    expect(await page.comment("urn:li:share:1", "Nice")).toEqual({ commentUrn: "urn:li:comment:(urn:li:share:1,1)" });
 
     const [req] = linkedin.requestsTo(COMMENTS_URL);
     expect(req!.headers.Authorization).toBe("Bearer access-1");
@@ -155,6 +164,12 @@ describe("comment", () => {
       object: "urn:li:share:1",
       message: { text: "Nice" },
     });
+  });
+
+  it("returns no comment URN when the body holds none", async () => {
+    linkedin.on("POST", COMMENTS_URL, () => json({ id: "1" }, 201));
+
+    expect(await page.comment("urn:li:share:1", "Nice")).toEqual({ commentUrn: null });
   });
 });
 

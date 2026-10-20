@@ -73,3 +73,7 @@ _Avoid_: install, link, onboard
 **Disconnect**:
 The operator action that revokes a Page connection.
 _Avoid_: unlink, remove
+
+**Activity entry**:
+The record that the plugin writes to the company activity log for each action as a Page: upload, post, react and comment. The tool writes it after LinkedIn did the action. A failed write goes to the plugin log and does not change the tool result.
+_Avoid_: audit entry, log entry

@@ -71,6 +71,19 @@ If a tool call omits `organizationId`, the tool acts as the default Page, else
 the only active Page. If several Pages are active and no default Page is set,
 the call fails. A post to the wrong company Page is not a recoverable mistake.
 
+Each tool that acts as a Page writes one activity entry to the company activity
+log after LinkedIn did the action. The metadata of the entry holds
+`organizationId`, `agentId` and `runId`. If the write fails, the plugin log
+keeps the failure and the tool still returns its result, so the agent does not
+do the action again.
+
+| Tool | `entityType` | `entityId` |
+|---|---|---|
+| `linkedin-page-upload` | `linkedin_page_media` | The media URN. |
+| `linkedin-page-post` | `linkedin_page_post` | The post URN. |
+| `linkedin-page-react` | `linkedin_page_reaction` | The reaction URN, or the post URN if LinkedIn returns no reaction URN. A reaction that exists already returns none. |
+| `linkedin-page-comment` | `linkedin_page_comment` | The comment URN, or the post URN if LinkedIn returns no comment URN. |
+
 ### Images and documents
 
 A post with a file takes three steps:

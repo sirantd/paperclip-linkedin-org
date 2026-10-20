@@ -43,6 +43,21 @@ type Assert<T extends true> = T;
 /** The manifest enum of reactionType must name the same reactions as ReactionType. */
 type ReactionTypesMatch = Assert<Equal<ToolParams<"linkedin-page-react">["reactionType"], ReactionType | undefined>>;
 
+/** The facts of an activity entry that only the action knows. */
+interface ActivityFacts {
+  message: string;
+  entityType: string;
+  entityId: string;
+  /** The metadata of this action. The tool shell adds organizationId, agentId and runId. */
+  metadata: Record<string, unknown>;
+}
+
+/** What one action as a Page gives back: the tool result and the facts of its activity entry. */
+interface ActionDone {
+  result: ToolResult;
+  activity: ActivityFacts;
+}
+
 /** The wire shape of a listed Page: snake_case, as when callers read table rows directly. */
 function pageRow(page: PageSummary) {
   return {
@@ -88,23 +103,53 @@ const plugin = definePlugin({
     );
 
     /**
+     * Write the activity entry of an action that is done. The action is live
+     * on LinkedIn, so a failed write goes to the plugin log and not to the
+     * agent: a tool error can make the agent do the action again.
+     */
+    async function writeActivityEntry(tool: ToolName, run: ToolRunContext, organizationId: string, facts: ActivityFacts) {
+      const { message, entityType, entityId, metadata } = facts;
+      const entryMetadata = { ...metadata, organizationId, agentId: run.agentId, runId: run.runId };
+      try {
+        await ctx.activity.log({ companyId: run.companyId, message, entityType, entityId, metadata: entryMetadata });
+      } catch (err) {
+        ctx.logger.error("Could not write the activity entry of a done action", {
+          tool,
+          companyId: run.companyId,
+          entityType,
+          entityId,
+          metadata: entryMetadata,
+          error: (err as Error).message,
+        });
+      }
+    }
+
+    /**
      * Register the agent tool `linkedin-page-{action}`. Each call does `action`
      * as the Page that its organizationId names, and a failure becomes the
-     * tool error. The parameter type comes from the manifest schema of the tool.
+     * tool error. A done action gets one activity entry from the facts that
+     * `work` gives back. The parameter type comes from the manifest schema of
+     * the tool.
      */
     function pageTool<A extends PageToolAction>(
       action: A,
-      work: (page: ActingPage, params: ToolParams<`linkedin-page-${A}`>, run: ToolRunContext) => Promise<ToolResult>,
+      work: (page: ActingPage, params: ToolParams<`linkedin-page-${A}`>, run: ToolRunContext) => Promise<ActionDone>,
     ): void {
       const name = `linkedin-page-${action}` as const;
       ctx.tools.register(name, declared(name), async (params, run) => {
         // The host passes the parameters untyped. The manifest schema states their shape.
         const p = params as ToolParams<`linkedin-page-${A}`> & { organizationId?: string };
+        let done: ActionDone & { organizationId: string };
         try {
-          return await pages.actAs(run.companyId, p.organizationId, action, (page) => work(page, p, run));
+          done = await pages.actAs(run.companyId, p.organizationId, action, async (page) => ({
+            ...(await work(page, p, run)),
+            organizationId: page.organizationId,
+          }));
         } catch (err) {
           return { error: (err as Error).message };
         }
+        await writeActivityEntry(name, run, done.organizationId, done.activity);
+        return done.result;
       });
     }
 
@@ -120,63 +165,73 @@ const plugin = definePlugin({
         contentType: file.contentType,
         bytes: Buffer.from(file.contentBase64, "base64"),
       });
-      await ctx.activity.log({
-        companyId: run.companyId,
-        message: `Uploaded ${fileName} for ${page.displayName}`,
-        entityType: "linkedin_page_media",
-        entityId: mediaUrn,
-        metadata: {
-          mediaUrn,
-          attachmentId: file.attachmentId,
-          sha256: file.sha256,
-          contentType: file.contentType,
-          byteSize: file.byteSize,
-          organizationId: page.organizationId,
-          agentId: run.agentId,
-          runId: run.runId,
-        },
-      });
       return {
-        content:
-          `Uploaded ${fileName} for ${page.displayName} as ${mediaUrn} (${status}). ` +
-          `Pass mediaUrn to linkedin-page-post${kind === "document" ? " with a title" : ""}.`,
-        data: { mediaUrn, status, kind, originalFilename: file.originalFilename },
+        result: {
+          content:
+            `Uploaded ${fileName} for ${page.displayName} as ${mediaUrn} (${status}). ` +
+            `Pass mediaUrn to linkedin-page-post${kind === "document" ? " with a title" : ""}.`,
+          data: { mediaUrn, status, kind, originalFilename: file.originalFilename },
+        },
+        activity: {
+          message: `Uploaded ${fileName} for ${page.displayName}`,
+          entityType: "linkedin_page_media",
+          entityId: mediaUrn,
+          metadata: {
+            mediaUrn,
+            attachmentId: file.attachmentId,
+            sha256: file.sha256,
+            contentType: file.contentType,
+            byteSize: file.byteSize,
+          },
+        },
       };
     });
 
-    pageTool("post", async (page, p, run) => {
-      const result = await page.post({
+    pageTool("post", async (page, p) => {
+      const published = await page.post({
         text: p.text,
         visibility: p.visibility,
         media: p.mediaUrn ? { mediaUrn: p.mediaUrn, title: p.title, altText: p.altText } : undefined,
       });
-      await ctx.activity.log({
-        companyId: run.companyId,
-        message: `Posted as ${page.displayName}`,
-        entityType: "linkedin_page_post",
-        entityId: result.postUrn,
-        metadata: {
-          postUrn: result.postUrn,
-          ...(p.mediaUrn && { mediaUrn: p.mediaUrn }),
-          organizationId: page.organizationId,
-          agentId: run.agentId,
-          runId: run.runId,
-        },
-      });
       return {
-        content: `Published as ${page.displayName}: ${result.permalink ?? result.postUrn}`,
-        data: result,
+        result: {
+          content: `Published as ${page.displayName}: ${published.permalink ?? published.postUrn}`,
+          data: published,
+        },
+        activity: {
+          message: `Posted as ${page.displayName}`,
+          entityType: "linkedin_page_post",
+          entityId: published.postUrn,
+          metadata: { postUrn: published.postUrn, ...(p.mediaUrn && { mediaUrn: p.mediaUrn }) },
+        },
       };
     });
 
     pageTool("react", async (page, p) => {
-      await page.react(p.postUrn, p.reactionType);
-      return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
+      const { reactionUrn, reactionType } = await page.react(p.postUrn, p.reactionType);
+      return {
+        result: { content: `Reacted to ${p.postUrn} as ${page.displayName}.` },
+        activity: {
+          message: `Reacted to ${p.postUrn} as ${page.displayName}`,
+          entityType: "linkedin_page_reaction",
+          // A reaction that exists already comes back without a URN.
+          entityId: reactionUrn ?? p.postUrn,
+          metadata: { postUrn: p.postUrn, reactionType, ...(reactionUrn && { reactionUrn }) },
+        },
+      };
     });
 
     pageTool("comment", async (page, p) => {
-      await page.comment(p.postUrn, p.text);
-      return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
+      const { commentUrn } = await page.comment(p.postUrn, p.text);
+      return {
+        result: { content: `Commented on ${p.postUrn} as ${page.displayName}.` },
+        activity: {
+          message: `Commented on ${p.postUrn} as ${page.displayName}`,
+          entityType: "linkedin_page_comment",
+          entityId: commentUrn ?? p.postUrn,
+          metadata: { postUrn: p.postUrn, ...(commentUrn && { commentUrn }) },
+        },
+      };
     });
   },
 
