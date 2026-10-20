@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { linkedInPage, type PageCalls } from "../src/adapters/linkedin/page.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
 import {
@@ -24,9 +24,12 @@ let page: PageCalls;
 
 beforeEach(() => {
   linkedin = new FakeLinkedIn();
-  // File uploads use the Node fetch; vitest.config.ts restores it after each test.
-  vi.stubGlobal("fetch", linkedin.fetch);
-  page = linkedInPage(hostHttp(linkedin), { accessToken: "access-1", organizationUrn: "urn:li:organization:111" });
+  // The REST calls go through the host client; the file bytes go to the fake unchanged.
+  page = linkedInPage(
+    hostHttp(linkedin),
+    { accessToken: "access-1", organizationUrn: "urn:li:organization:111" },
+    linkedin.fetch,
+  );
 });
 
 describe("post", () => {

@@ -9,7 +9,7 @@ import {
   type PageAction,
 } from "./adapters/linkedin/scopes.js";
 import { LinkedInApiError, LinkedInOAuthError } from "./adapters/linkedin/errors.js";
-import { linkedInPage, type PageCalls } from "./adapters/linkedin/page.js";
+import { linkedInPage, type FileTransport, type PageCalls } from "./adapters/linkedin/page.js";
 
 export type PageConnectionStatus = "active" | "expired" | "revoked";
 
@@ -115,7 +115,7 @@ const REFRESH_SKEW_MS = 5 * 60 * 1000;
 /** An OAuth state older than this is refused; the operator must start connect again. */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-export function createPageConnections(ctx: PluginContext): PageConnections {
+export function createPageConnections(ctx: PluginContext, fileTransport?: FileTransport): PageConnections {
   /** The refresh in progress for each Page connection, by row id; concurrent calls share it. */
   const refreshes = new Map<string, Promise<string>>();
 
@@ -136,7 +136,7 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
           organizationId: row.organization_id,
           organizationUrn: row.organization_urn,
           displayName: row.page_name ?? row.organization_urn,
-          ...linkedInPage(ctx.http, { accessToken, organizationUrn: row.organization_urn }),
+          ...linkedInPage(ctx.http, { accessToken, organizationUrn: row.organization_urn }, fileTransport),
         });
       } catch (err) {
         if (!(err instanceof LinkedInApiError)) throw err;

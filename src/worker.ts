@@ -12,7 +12,7 @@ import {
   type PageConnections,
   type PageSummary,
 } from "./page-connections.js";
-import type { ReactionType } from "./adapters/linkedin/publish.js";
+import type { ReactionType } from "./adapters/linkedin/page.js";
 import type { PageAction } from "./adapters/linkedin/scopes.js";
 import { MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
 import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";

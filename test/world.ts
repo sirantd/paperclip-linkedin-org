@@ -294,8 +294,11 @@ export async function createWorld(): Promise<World> {
   const companyId = await addCompany();
   configs.set(companyId, pluginConfig());
 
-  // File uploads use the Node fetch, not ctx.http. The stub comes after the
-  // PGLite load; vitest.config.ts restores the real fetch after each test.
+  // The worker builds its Page connections with the default file transport,
+  // the Node fetch, and plugin.test.ts cannot pass it the fake. A test that
+  // builds the Page connections or the Page calls passes linkedin.fetch and
+  // needs no stub. The stub comes after the PGLite load; vitest.config.ts
+  // restores the real fetch after each test.
   vi.stubGlobal("fetch", linkedin.fetch);
 
   const close = () => pg.close();
