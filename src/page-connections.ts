@@ -9,11 +9,15 @@ import {
   type PageAction,
 } from "./adapters/linkedin/scopes.js";
 import { LinkedInApiError, LinkedInOAuthError } from "./adapters/linkedin/errors.js";
+import { linkedInPage, type PageCalls } from "./adapters/linkedin/page.js";
 
 export type PageConnectionStatus = "active" | "expired" | "revoked";
 
-/** The Page one tool call acts as, with an access token that is valid now. */
-export interface ActingPage {
+/**
+ * The Page one tool call acts as, and the LinkedIn calls it makes with an
+ * access token that is valid now.
+ */
+export interface ActingPage extends PageCalls {
   organizationId: string;
   organizationUrn: string;
   /** The Page name, or the organization URN when LinkedIn gave no name. */
@@ -126,6 +130,7 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
           organizationUrn: row.organization_urn,
           displayName: row.page_name ?? row.organization_urn,
           accessToken,
+          ...linkedInPage(ctx.http, { accessToken, organizationUrn: row.organization_urn }),
         });
       } catch (err) {
         if (!(err instanceof LinkedInApiError)) throw err;

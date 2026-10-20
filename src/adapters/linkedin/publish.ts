@@ -7,14 +7,16 @@ import {
   restHeaders,
 } from "./constants.js";
 import { apiError } from "./errors.js";
+import type { PostFile } from "./media.js";
 
 export type ReactionType = "LIKE" | "PRAISE" | "EMPATHY" | "INTEREST" | "APPRECIATION";
 
-/** The `content.media` of a post. */
-export interface PostMedia {
-  id: string;
-  title?: string;
-  altText?: string;
+/** The text of a post, and the file it shows. */
+export interface PostInput {
+  text: string;
+  visibility?: "PUBLIC" | "LOGGED_IN";
+  /** An uploaded image or document. LinkedIn requires `title` for a document. */
+  media?: PostFile;
 }
 
 export interface PublishResult {
@@ -30,18 +32,11 @@ export interface PublishResult {
  */
 export async function publishAsOrganization(
   http: PluginHttpClient,
-  input: {
-    accessToken: string;
-    organizationId: string;
-    text: string;
-    visibility?: "PUBLIC" | "LOGGED_IN";
-    /** An uploaded image or document. LinkedIn requires `title` for a document. */
-    media?: PostMedia;
-  },
+  input: PostInput & { accessToken: string; organizationUrn: string },
 ): Promise<PublishResult> {
-  const author = organizationUrn(input.organizationId);
+  const { media } = input;
   const body = {
-    author,
+    author: input.organizationUrn,
     commentary: input.text,
     visibility: input.visibility ?? "PUBLIC",
     distribution: {
@@ -49,7 +44,15 @@ export async function publishAsOrganization(
       targetEntities: [],
       thirdPartyDistributionChannels: [],
     },
-    ...(input.media && { content: { media: input.media } }),
+    ...(media && {
+      content: {
+        media: {
+          id: media.mediaUrn,
+          ...(media.title && { title: media.title }),
+          ...(media.altText && { altText: media.altText }),
+        },
+      },
+    }),
     lifecycleState: "PUBLISHED",
     isReshareDisabledByAuthor: false,
   };

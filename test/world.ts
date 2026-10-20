@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { vi } from "vitest";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { PluginApiRequestInput, PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginApiRequestInput, PluginContext, PluginHttpClient } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 
@@ -163,6 +163,14 @@ export class FakeLinkedIn {
   }
 }
 
+/** ctx.http in front of `linkedin`. As the SDK client does, it sends a body that is not a string as String(body). */
+export function hostHttp(linkedin: FakeLinkedIn): PluginHttpClient {
+  return {
+    fetch: (url: string, init: RequestInit = {}) =>
+      linkedin.fetch(url, init.body == null || typeof init.body === "string" ? init : { ...init, body: String(init.body) }),
+  };
+}
+
 /**
  * Put an attachment with `bytes` on a new issue of `companyId`, as the host
  * stores it, and return the attachment.
@@ -268,11 +276,7 @@ export async function createWorld(): Promise<World> {
         return { rowCount: result.affectedRows ?? 0 };
       },
     },
-    // As the SDK client does, send a body that is not a string as String(body).
-    http: {
-      fetch: (url: string, init: RequestInit = {}) =>
-        linkedin.fetch(url, init.body == null || typeof init.body === "string" ? init : { ...init, body: String(init.body) }),
-    },
+    http: hostHttp(linkedin),
     secrets: {
       async resolve(ref: { secretId: string }) {
         const value = secrets[ref.secretId];

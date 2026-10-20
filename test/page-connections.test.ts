@@ -58,6 +58,8 @@ describe("actAs", () => {
       organizationUrn: "urn:li:organization:111",
       displayName: "Acme",
       accessToken: "access-1",
+      post: expect.any(Function),
+      upload: expect.any(Function),
     });
     expect(world.linkedin.tokenCalls()).toHaveLength(1);
   });
