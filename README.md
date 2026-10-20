@@ -47,7 +47,9 @@ unavailable, so the authorizing member URN is not recorded.
 | `redirectBaseUrl` | Public origin of this instance. Redirect URI is `{base}/api/plugins/sirantd.linkedin-org/api/oauth/callback?companyId={companyId}`. Register it in the LinkedIn app for each company: LinkedIn compares the full URI, query included. |
 | `clientIdRef` | Secret holding the app Client ID. |
 | `clientSecretRef` | Secret holding the Primary Client Secret. |
-| `defaultOrganizationUrn` | Optional. The Organization URN or the organization id of the Page that a tool call acts as when it omits `organizationId`. |
+| `defaultOrganization` | Optional. The organization id or the Organization URN of the Page that a tool call acts as when it omits `organizationId`. |
+
+The key `defaultOrganizationUrn` is deprecated. It applies only when `defaultOrganization` is not set. Then each worker process logs one warning for each company.
 
 Generate a DEK with:
 

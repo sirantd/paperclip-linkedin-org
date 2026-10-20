@@ -133,16 +133,40 @@ interface PluginConfigShape {
   redirectBaseUrl: string;
   clientIdRef: EnvSecretRefBinding;
   clientSecretRef: EnvSecretRefBinding;
+  /** The organization reference of the default Page. */
+  defaultOrganization?: string;
+  /** Deprecated: the earlier key of defaultOrganization. */
   defaultOrganizationUrn?: string;
+}
+
+/** The secret fields of PluginConfigShape. */
+type SecretPath = "dekRef" | "clientIdRef" | "clientSecretRef";
+
+/** The config keys of the default Page. The first key with a value applies. */
+const DEFAULT_PAGE_KEYS = ["defaultOrganization", "defaultOrganizationUrn"] as const;
+
+/** The default Page as the operator set it. */
+interface DefaultPage {
+  /** The organization reference. */
+  ref: string;
+  /** The config key that holds it. */
+  key: (typeof DEFAULT_PAGE_KEYS)[number];
+}
+
+interface ClientCredentials {
+  clientId: string;
+  clientSecret: string;
 }
 
 interface Credentials {
   dek: string;
-  clientId: string;
-  clientSecret: string;
   redirectUri: string;
-  /** The organization reference of the default Page, as the operator set it. */
-  defaultOrganizationRef: string | null;
+  defaultPage: DefaultPage | null;
+  /**
+   * Resolve the Client ID and the Client Secret. Only connect and a token
+   * refresh need them, so a token that is still valid needs only the DEK.
+   */
+  client(): Promise<ClientCredentials>;
 }
 
 /**
@@ -188,22 +212,32 @@ interface PendingConnect {
   actorId: string;
 }
 
+/** actAs logs this once for each company and worker process. */
+const DEPRECATED_KEY_WARNING =
+  "The default Page uses the deprecated config key defaultOrganizationUrn. Move its value to defaultOrganization.";
+
 /** The refusals that are faults of LinkedIn or of the plugin; finishConnect logs them. */
 const CONNECT_FAULTS: ReadonlySet<ConnectRefusal> = new Set(["linkedin_failed", "plugin_failed"]);
 
 export function createPageConnections(ctx: PluginContext, fileTransport?: FileTransport): PageConnections {
   /** The refresh in progress for each Page connection, by row id; concurrent calls share it. */
   const refreshes = new Map<string, Promise<string>>();
+  /** The companies that got the warning about the deprecated key of the default Page. */
+  const warnedOfDeprecatedKey = new Set<string>();
 
   return {
     async actAs(companyId, organizationRef, action, work) {
       const creds = await loadCredentials(ctx, companyId);
+      if (creds.defaultPage?.key === "defaultOrganizationUrn" && !warnedOfDeprecatedKey.has(companyId)) {
+        warnedOfDeprecatedKey.add(companyId);
+        ctx.logger.warn(DEPRECATED_KEY_WARNING, { companyId });
+      }
       const row = await findConnection(ctx, companyId, chosenOrganizationId(organizationRef, creds));
       const missing = missingScopes(row.scopes, action);
       if (missing.length > 0) {
         throw new Error(
           `Page ${row.organization_id} was connected without ${missing.join(", ")}, which ${action} needs. ` +
-            "Reconnect the Page in Settings.",
+            "An operator must connect the Page again.",
         );
       }
       const accessToken = await accessTokenFor(ctx, companyId, creds, row, refreshes);
@@ -220,14 +254,14 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
           case "token_rejected":
             await markExpired(ctx, row.id);
             throw new Error(
-              `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). Reconnect the Page in Settings.`,
+              `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). An operator must connect the Page again.`,
             );
           case "access_denied":
             throw new Error(
               `LinkedIn refused ${action} as Page ${row.organization_id} (${err.message}). ` +
                 `The Page connection holds the scopes that the plugin requires for ${action}, so the authorizing ` +
                 "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
-                "Check both, then reconnect the Page in Settings.",
+                "An operator must examine both causes, then connect the Page again.",
             );
           case "rate_limited":
             throw new Error(
@@ -258,12 +292,14 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
       const creds = await loadCredentials(ctx, companyId);
       // A bad DEK must not reach LinkedIn: the finish could not store the tokens.
       requireSealingKey(creds.dek);
+      // The finish needs the Client Secret too. A missing secret must fail before the member approves.
+      const { clientId } = await creds.client();
       const state = crypto.randomUUID();
       const pending: PendingConnect = { createdAt: Date.now(), actorId: operatorId };
       await ctx.state.set(oauthStateKey(companyId, state), pending);
       return {
         authorizationUrl: buildAuthorizationUrl({
-          clientId: creds.clientId,
+          clientId,
           redirectUri: creds.redirectUri,
           state,
         }),
@@ -295,27 +331,33 @@ async function loadCredentials(ctx: PluginContext, companyId: string): Promise<C
   if (!config) {
     throw new Error("LinkedIn Page plugin is not configured for this company");
   }
-  const [dek, clientId, clientSecret] = (
-    await Promise.all([
-      ctx.secrets.resolve(config.dekRef, { companyId, configPath: "dekRef" }),
-      ctx.secrets.resolve(config.clientIdRef, { companyId, configPath: "clientIdRef" }),
-      ctx.secrets.resolve(config.clientSecretRef, { companyId, configPath: "clientSecretRef" }),
-    ])
-  ).map((v) => v.trim()) as [string, string, string];
-  // Trimmed because secrets pasted through a UI or written by `echo` routinely
-  // carry a trailing newline, and LinkedIn answers that with a bare
-  // invalid_client that looks identical to a wrong secret.
+  const resolve = async (configPath: SecretPath): Promise<string> =>
+    // Trimmed because secrets pasted through a UI or written by `echo` routinely
+    // carry a trailing newline, and LinkedIn answers that with a bare
+    // invalid_client that looks identical to a wrong secret.
+    (await ctx.secrets.resolve(config[configPath], { companyId, configPath })).trim();
   return {
-    dek,
-    clientId,
-    clientSecret,
+    dek: await resolve("dekRef"),
+    async client() {
+      const [clientId, clientSecret] = await Promise.all([resolve("clientIdRef"), resolve("clientSecretRef")]);
+      return { clientId, clientSecret };
+    },
     // Must match the URI registered in the LinkedIn app byte for byte, including
     // the companyId query param — LinkedIn compares before appending code/state.
     redirectUri:
       `${config.redirectBaseUrl.replace(/\/+$/, "")}` +
       `/api/plugins/${manifest.id}/api/oauth/callback?companyId=${companyId}`,
-    defaultOrganizationRef: config.defaultOrganizationUrn || null,
+    defaultPage: defaultPageOf(config),
   };
+}
+
+/** The default Page of the config. If both keys are set, defaultOrganization wins. */
+function defaultPageOf(config: PluginConfigShape): DefaultPage | null {
+  for (const key of DEFAULT_PAGE_KEYS) {
+    const ref = config[key];
+    if (ref) return { ref, key };
+  }
+  return null;
 }
 
 function table(ctx: PluginContext): string {
@@ -379,7 +421,7 @@ function requireSealingKey(dek: string): void {
   } catch (err) {
     throw new Error(
       `The Token Encryption Key (dekRef) cannot seal tokens: ${(err as Error).message}. ` +
-        "Correct it in Settings, then connect again.",
+        "Correct dekRef in the plugin config, then connect again.",
     );
   }
 }
@@ -400,12 +442,13 @@ function requireOrganizationId(organizationRef: string): string {
  */
 function chosenOrganizationId(organizationRef: string | undefined, creds: Credentials): string | null {
   if (organizationRef) return requireOrganizationId(organizationRef);
-  if (!creds.defaultOrganizationRef) return null;
-  const organizationId = organizationIdOf(creds.defaultOrganizationRef);
+  if (!creds.defaultPage) return null;
+  const { ref, key } = creds.defaultPage;
+  const organizationId = organizationIdOf(ref);
   if (!organizationId) {
     throw new Error(
-      `The default Page ${creds.defaultOrganizationRef} in the plugin settings is not an organization id ` +
-        "or an Organization URN. Correct it in Settings.",
+      `The default Page ${ref} is not an organization id or an Organization URN. ` +
+        `An operator must correct ${key} in the plugin config.`,
     );
   }
   return organizationId;
@@ -428,8 +471,8 @@ async function findConnection(
   if (rows.length === 0) {
     throw new Error(
       organizationId
-        ? `No active connection for organization ${organizationId}. Connect the Page in Settings first.`
-        : "No LinkedIn Page is connected for this company. Connect one in Settings first.",
+        ? `No active connection for organization ${organizationId}. An operator must connect the Page first.`
+        : "No LinkedIn Page is connected for this company. An operator must connect a Page first.",
     );
   }
   // Refuse to guess when several Pages are connected — posting to the wrong
@@ -437,7 +480,7 @@ async function findConnection(
   if (!organizationId && rows.length > 1) {
     throw new Error(
       "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-        "or set a default Page in the plugin settings.",
+        "or ask an operator to set the default Page (defaultOrganization) in the plugin config.",
     );
   }
   return rows[0]!;
@@ -479,16 +522,18 @@ async function refreshAccessToken(
   if (!row.refresh_token_sealed) {
     await markExpired(ctx, row.id);
     throw new Error(
-      `LinkedIn token for Page ${row.organization_id} expired and no refresh token is stored. Reconnect the Page in Settings.`,
+      `LinkedIn token for Page ${row.organization_id} expired and no refresh token is stored. An operator must connect the Page again.`,
     );
   }
 
+  // Outside the try: a secret that cannot be resolved keeps its own text.
+  const { clientId, clientSecret } = await creds.client();
   let refreshed: LinkedInTokens;
   try {
     refreshed = await refreshTokens(ctx.http, {
       refreshToken: openToken(row.refresh_token_sealed, creds.dek),
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
+      clientId,
+      clientSecret,
     });
   } catch (err) {
     // Only invalid_grant means the refresh token is dead. A network error or a
@@ -496,7 +541,7 @@ async function refreshAccessToken(
     if (err instanceof LinkedInOAuthError && err.code === "invalid_grant") {
       await markExpired(ctx, row.id);
       throw new Error(
-        `Refreshing the LinkedIn token for Page ${row.organization_id} failed (${err.message}). Reconnect the Page in Settings.`,
+        `Refreshing the LinkedIn token for Page ${row.organization_id} failed (${err.message}). An operator must connect the Page again.`,
       );
     }
     throw new Error(
@@ -569,10 +614,12 @@ async function completeOAuth(
   }
 
   let creds: Credentials;
+  let client: ClientCredentials;
   try {
     creds = await loadCredentials(ctx, companyId);
     // The DEK can change after start. Examine it again before LinkedIn spends the code.
     requireSealingKey(creds.dek);
+    client = await creds.client();
   } catch (err) {
     return { kind: "plugin_failed", reason: (err as Error).message };
   }
@@ -581,8 +628,7 @@ async function completeOAuth(
   try {
     tokens = await exchangeCode(ctx.http, {
       code,
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
+      ...client,
       redirectUri: creds.redirectUri,
     });
   } catch (err) {

@@ -137,7 +137,7 @@ describe("agent tools", () => {
     const before = world.linkedin.requests.length;
 
     expect(await tool(name, params)).toEqual({
-      error: `Page 111 was connected without ${missing}, which ${action} needs. Reconnect the Page in Settings.`,
+      error: `Page 111 was connected without ${missing}, which ${action} needs. An operator must connect the Page again.`,
     });
     expect(world.linkedin.requests).toHaveLength(before);
   });
@@ -295,7 +295,7 @@ describe("linkedin-page-post", () => {
     expect(await tool("linkedin-page-post", { text: "Hi" })).toEqual({
       error:
         "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-        "or set a default Page in the plugin settings.",
+        "or ask an operator to set the default Page (defaultOrganization) in the plugin config.",
     });
     expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
   });
@@ -307,7 +307,7 @@ describe("linkedin-page-post", () => {
     expect(await tool("linkedin-page-post", { text: "Hi" })).toEqual({
       error:
         'LinkedIn rejected the token for Page 111 (LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
-        "Reconnect the Page in Settings.",
+        "An operator must connect the Page again.",
     });
     expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "expired" })]);
     expect(world.harness.activity).toEqual([]);
@@ -422,7 +422,7 @@ describe("linkedin-page-upload", () => {
     expect(await tool("linkedin-page-upload", { attachmentId: file.id })).toEqual({
       error:
         'LinkedIn rejected the token for Page 111 (LinkedIn image upload 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
-        "Reconnect the Page in Settings.",
+        "An operator must connect the Page again.",
     });
     expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "expired" })]);
   });

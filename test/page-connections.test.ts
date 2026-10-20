@@ -25,11 +25,11 @@ import {
 } from "./world.js";
 
 const REDIRECT_PATH = `/api/plugins/${manifest.id}/api/oauth/callback`;
-const NO_PAGE = "No LinkedIn Page is connected for this company. Connect one in Settings first.";
+const NO_PAGE = "No LinkedIn Page is connected for this company. An operator must connect a Page first.";
 /** The refusal of a DEK of 16 bytes. */
 const BAD_DEK =
   "The Token Encryption Key (dekRef) cannot seal tokens: DEK must decode to exactly 32 bytes, got 16. " +
-  "Correct it in Settings, then connect again.";
+  "Correct dekRef in the plugin config, then connect again.";
 
 let world: World;
 let pages: PageConnections;
@@ -85,6 +85,11 @@ function reactionTokens() {
   return world.linkedin.requestsTo(REACTIONS_URL).map((r) => r.headers.Authorization);
 }
 
+/** The logged warnings about the deprecated key of the default Page. */
+function deprecatedKeyWarnings() {
+  return world.harness.logs.filter((log) => log.level === "warn" && log.message.includes("defaultOrganizationUrn"));
+}
+
 async function statusOf(organizationId: string) {
   return (await pages.list(world.companyId)).find((p) => p.organizationId === organizationId)?.status;
 }
@@ -129,34 +134,65 @@ describe("actAs", () => {
     });
 
     it("uses the default Page when the call names none", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs()).organizationId).toBe("222");
+      expect(deprecatedKeyWarnings()).toEqual([]);
     });
 
     it("uses the default Page when the call names an empty reference", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs("")).organizationId).toBe("222");
     });
 
     it("uses a default Page set as an organization id", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs()).organizationId).toBe("222");
     });
 
-    it("names the setting when the default Page is not an organization reference", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
+    it("uses the deprecated key defaultOrganizationUrn and warns once", async () => {
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
-      await expect(actAs()).rejects.toThrow(
-        "The default Page acme in the plugin settings is not an organization id or an Organization URN. " +
-          "Correct it in Settings.",
-      );
+
+      expect((await actAs()).organizationId).toBe("222");
+      expect((await actAs()).organizationId).toBe("222");
+      expect(deprecatedKeyWarnings()).toEqual([
+        {
+          level: "warn",
+          message:
+            "The default Page uses the deprecated config key defaultOrganizationUrn. " +
+            "Move its value to defaultOrganization.",
+          meta: { companyId: world.companyId },
+        },
+      ]);
     });
 
+    it("prefers defaultOrganization over defaultOrganizationUrn and does not warn", async () => {
+      world.configs.set(
+        world.companyId,
+        pluginConfig({ defaultOrganization: "222", defaultOrganizationUrn: "urn:li:organization:111" }),
+      );
+      await connect([ACME, GLOBEX]);
+      expect((await actAs()).organizationId).toBe("222");
+      expect(deprecatedKeyWarnings()).toEqual([]);
+    });
+
+    it.each(["defaultOrganization", "defaultOrganizationUrn"])(
+      "names %s when its default Page is not an organization reference",
+      async (key) => {
+        world.configs.set(world.companyId, pluginConfig({ [key]: "acme" }));
+        await connect([ACME, GLOBEX]);
+        await expect(actAs()).rejects.toThrow(
+          "The default Page acme is not an organization id or an Organization URN. " +
+            `An operator must correct ${key} in the plugin config.`,
+        );
+      },
+    );
+
     it("prefers the named Page over the default Page", async () => {
-      world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "urn:li:organization:222" }));
+      world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "urn:li:organization:222" }));
       await connect([ACME, GLOBEX]);
       expect((await actAs("111")).organizationId).toBe("111");
     });
@@ -165,7 +201,7 @@ describe("actAs", () => {
       await connect([ACME, GLOBEX]);
       await expect(actAs()).rejects.toThrow(
         "Multiple LinkedIn Pages are connected. Pass organizationId explicitly, " +
-          "or set a default Page in the plugin settings.",
+          "or ask an operator to set the default Page (defaultOrganization) in the plugin config.",
       );
     });
 
@@ -176,7 +212,7 @@ describe("actAs", () => {
     it("fails when the named Page is not connected", async () => {
       await connect([ACME]);
       await expect(actAs("999")).rejects.toThrow(
-        "No active connection for organization 999. Connect the Page in Settings first.",
+        "No active connection for organization 999. An operator must connect the Page first.",
       );
     });
 
@@ -242,7 +278,7 @@ describe("actAs", () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S, refresh_token: undefined });
 
       await expect(actAs()).rejects.toThrow(
-        "LinkedIn token for Page 111 expired and no refresh token is stored. Reconnect the Page in Settings.",
+        "LinkedIn token for Page 111 expired and no refresh token is stored. An operator must connect the Page again.",
       );
       expect(await statusOf("111")).toBe("expired");
       await expect(actAs()).rejects.toThrow(NO_PAGE);
@@ -254,7 +290,7 @@ describe("actAs", () => {
 
       await expect(actAs()).rejects.toThrow(
         'Refreshing the LinkedIn token for Page 111 failed (LinkedIn token endpoint 400: {"error":"invalid_grant"}). ' +
-          "Reconnect the Page in Settings.",
+          "An operator must connect the Page again.",
       );
       expect(await statusOf("111")).toBe("expired");
     });
@@ -285,6 +321,30 @@ describe("actAs", () => {
       await expect(actAs()).rejects.toThrow("confirm it matches the app's current Primary Client Secret");
     });
 
+    it("resolves only the DEK while the token is valid", async () => {
+      await connect([ACME]);
+      const resolve = vi.spyOn(world.ctx.secrets, "resolve");
+
+      await react();
+
+      expect(resolve.mock.calls.map(([, options]) => options?.configPath)).toEqual(["dekRef"]);
+    });
+
+    it("resolves the Client ID and the Client Secret once for a refresh that concurrent calls share", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
+      const resolve = vi.spyOn(world.ctx.secrets, "resolve");
+
+      await Promise.all([react(), react()]);
+
+      expect(resolve.mock.calls.map(([, options]) => options?.configPath).sort()).toEqual([
+        "clientIdRef",
+        "clientSecretRef",
+        "dekRef",
+        "dekRef",
+      ]);
+    });
+
     it("tries the refresh again on the next call after a failed refresh", async () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S });
       world.linkedin.scriptRefresh(() => json({}, 503));
@@ -311,7 +371,7 @@ describe("actAs", () => {
 
       await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(rejected))).rejects.toThrow(
         'LinkedIn rejected the token for Page 111 (LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
-          "Reconnect the Page in Settings.",
+          "An operator must connect the Page again.",
       );
       expect(await statusOf("111")).toBe("expired");
     });
@@ -324,7 +384,7 @@ describe("actAs", () => {
         "LinkedIn refused react as Page 111 (LinkedIn react 403: ACCESS_DENIED). " +
           "The Page connection holds the scopes that the plugin requires for react, so the authorizing " +
           "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
-          "Check both, then reconnect the Page in Settings.",
+          "An operator must examine both causes, then connect the Page again.",
       );
       expect(await statusOf("111")).toBe("active");
     });
@@ -368,7 +428,7 @@ describe("actAs", () => {
       ]);
 
       await expect(actAs()).rejects.toThrow(
-        "Page 111 was connected without w_organization_social, which post needs. Reconnect the Page in Settings.",
+        "Page 111 was connected without w_organization_social, which post needs. An operator must connect the Page again.",
       );
     });
 
@@ -378,7 +438,7 @@ describe("actAs", () => {
 
       await expect(pages.actAs(world.companyId, undefined, "react", async (page) => page)).rejects.toThrow(
         "Page 111 was connected without w_organization_social_feed, which react needs. " +
-          "Reconnect the Page in Settings.",
+          "An operator must connect the Page again.",
       );
       expect(world.linkedin.tokenCalls()).toHaveLength(1);
       expect(await statusOf("111")).toBe("active");
@@ -452,7 +512,7 @@ describe("startConnect", () => {
   });
 
   it("connects with a default Page that is not an organization reference", async () => {
-    world.configs.set(world.companyId, pluginConfig({ defaultOrganizationUrn: "acme" }));
+    world.configs.set(world.companyId, pluginConfig({ defaultOrganization: "acme" }));
     expect(await connect([ACME])).toHaveLength(1);
   });
 
