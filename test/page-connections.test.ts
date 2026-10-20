@@ -169,7 +169,7 @@ describe("actAs", () => {
       await expect(actAs()).rejects.toThrow(NO_PAGE);
     });
 
-    it("expires the Page connection when the refresh fails", async () => {
+    it("expires the Page connection when LinkedIn refuses the refresh token", async () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S });
       world.linkedin.scriptRefresh(() => json({ error: "invalid_grant" }, 400));
 
@@ -178,6 +178,42 @@ describe("actAs", () => {
           "Reconnect the Page in Settings.",
       );
       expect(await statusOf("111")).toBe("expired");
+    });
+
+    it.each([
+      ["a LinkedIn outage", () => json({ message: "Service Unavailable" }, 503)],
+      ["a wrong Client Secret", () => json({ error: "invalid_client" }, 401)],
+      [
+        "a network error",
+        () => {
+          throw new TypeError("fetch failed");
+        },
+      ],
+    ])("keeps the Page connection active after %s", async (_cause, respond) => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(respond);
+
+      await expect(actAs()).rejects.toThrow(
+        /^Refreshing the LinkedIn token for Page 111 failed \(.+\)\. The Page connection stays active\.$/,
+      );
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it("names the Client Secret when LinkedIn refuses the client", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => json({ error: "invalid_client" }, 401));
+
+      await expect(actAs()).rejects.toThrow("confirm it matches the app's current Primary Client Secret");
+    });
+
+    it("tries the refresh again on the next call after a failed refresh", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => json({}, 503));
+      await expect(actAs()).rejects.toThrow();
+
+      world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
+
+      expect((await actAs()).accessToken).toBe("access-2");
     });
   });
 
@@ -200,11 +236,35 @@ describe("actAs", () => {
       expect(await statusOf("111")).toBe("expired");
     });
 
-    it("passes other errors through and keeps the Page connection active", async () => {
+    it("names the action, the Page and the likely causes when LinkedIn refuses the action", async () => {
       await connect([ACME]);
       const denied = new LinkedInApiError(403, "LinkedIn react 403: ACCESS_DENIED");
 
-      await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(denied))).rejects.toBe(denied);
+      await expect(pages.actAs(world.companyId, undefined, "react", () => Promise.reject(denied))).rejects.toThrow(
+        "LinkedIn refused react as Page 111 (LinkedIn react 403: ACCESS_DENIED). " +
+          "The Page connection holds the scopes that the plugin requires for react, so the authorizing " +
+          "member may no longer administer the Page, or LinkedIn may have withdrawn the app's access. " +
+          "Check both, then reconnect the Page in Settings.",
+      );
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it("names the rate limit and keeps the Page connection active", async () => {
+      await connect([ACME]);
+      const limited = new LinkedInApiError(429, "LinkedIn comment 429: TOO_MANY_REQUESTS");
+
+      await expect(pages.actAs(world.companyId, undefined, "comment", () => Promise.reject(limited))).rejects.toThrow(
+        "LinkedIn refused comment as Page 111 because of its rate limit (LinkedIn comment 429: TOO_MANY_REQUESTS). " +
+          "Try again later.",
+      );
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it.each([426, 500])("passes a %i through and keeps the Page connection active", async (status) => {
+      await connect([ACME]);
+      const failed = new LinkedInApiError(status, `LinkedIn publish ${status}: failed`);
+
+      await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(failed))).rejects.toBe(failed);
       expect(await statusOf("111")).toBe("active");
     });
   });

@@ -1,5 +1,6 @@
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
 import { LINKEDIN_AUTHORIZE_URL, LINKEDIN_TOKEN_URL } from "./constants.js";
+import { LinkedInOAuthError } from "./errors.js";
 import { REQUESTED_SCOPES } from "./scopes.js";
 
 export interface LinkedInTokens {
@@ -37,11 +38,16 @@ async function postForm(
   const text = await res.text();
   if (!res.ok) {
     // LinkedIn returns the useful detail in the body, not the status text.
-    const hint = text.includes("invalid_client")
+    const code = oauthErrorCode(text);
+    const hint = code === "invalid_client"
       ? " — client_id is valid if authorization succeeded, so this points at the " +
         "stored Client Secret: confirm it matches the app's current Primary Client Secret."
       : "";
-    throw new Error(`LinkedIn token endpoint ${res.status}: ${text.slice(0, 500)}${hint}`);
+    throw new LinkedInOAuthError(
+      res.status,
+      code,
+      `LinkedIn token endpoint ${res.status}: ${text.slice(0, 500)}${hint}`,
+    );
   }
   const json = JSON.parse(text) as {
     access_token: string;
@@ -60,6 +66,16 @@ async function postForm(
       : null,
     scope: json.scope ?? null,
   };
+}
+
+/** The OAuth `error` field of a token endpoint error body, or null. */
+function oauthErrorCode(body: string): string | null {
+  try {
+    const { error } = JSON.parse(body) as { error?: unknown };
+    return typeof error === "string" ? error : null;
+  } catch {
+    return null;
+  }
 }
 
 export function exchangeCode(

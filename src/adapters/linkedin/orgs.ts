@@ -1,5 +1,6 @@
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
 import { LINKEDIN_ORGS_URL, LINKEDIN_ORG_ACLS_URL, restHeaders } from "./constants.js";
+import { apiError } from "./errors.js";
 
 export interface AdministeredPage {
   organizationUrn: string;
@@ -25,12 +26,9 @@ export async function listAdministeredPages(
   url.searchParams.set("state", "APPROVED");
 
   const res = await http.fetch(url.toString(), { headers: restHeaders(accessToken) });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`organizationAcls ${res.status}: ${text.slice(0, 500)}`);
-  }
+  if (!res.ok) throw await apiError(res, "organizationAcls");
 
-  const body = JSON.parse(text) as { elements?: Array<{ organization?: string }> };
+  const body = (await res.json()) as { elements?: Array<{ organization?: string }> };
   const urns = (body.elements ?? [])
     .map((e) => e.organization)
     .filter((u): u is string => typeof u === "string");

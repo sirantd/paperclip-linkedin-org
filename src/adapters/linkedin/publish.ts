@@ -6,7 +6,7 @@ import {
   organizationUrn,
   restHeaders,
 } from "./constants.js";
-import { LinkedInApiError } from "./errors.js";
+import { apiError } from "./errors.js";
 
 export type ReactionType = "LIKE" | "PRAISE" | "EMPATHY" | "INTEREST" | "APPRECIATION";
 
@@ -50,10 +50,7 @@ export async function publishAsOrganization(
     body: JSON.stringify(body),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new LinkedInApiError(res.status, `LinkedIn publish ${res.status}: ${text.slice(0, 500)}`);
-  }
+  if (!res.ok) throw await apiError(res, "LinkedIn publish");
 
   // The created post URN comes back in a header, not the body.
   const postUrn =
@@ -85,8 +82,7 @@ export async function reactAsOrganization(
 
   // 409/422 means the reaction already exists — that is the desired end state.
   if (res.ok || res.status === 409 || res.status === 422) return;
-  const text = await res.text();
-  throw new LinkedInApiError(res.status, `LinkedIn react ${res.status}: ${text.slice(0, 500)}`);
+  throw await apiError(res, "LinkedIn react");
 }
 
 /** Comment on a post as the Page. */
@@ -106,10 +102,7 @@ export async function commentAsOrganization(
     headers: restHeaders(input.accessToken),
     body: JSON.stringify({ actor, object: input.postUrn, message: { text: input.text } }),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new LinkedInApiError(res.status, `LinkedIn comment ${res.status}: ${text.slice(0, 500)}`);
-  }
+  if (!res.ok) throw await apiError(res, "LinkedIn comment");
 }
 
 function permalinkFor(postUrn: string): string | null {
