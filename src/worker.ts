@@ -9,6 +9,8 @@ import type {
 import {
   createPageConnections,
   type ActingPage,
+  type ConnectOutcome,
+  type LinkedInRedirect,
   type PageConnections,
   type PageSummary,
 } from "./page-connections.js";
@@ -255,6 +257,24 @@ export default plugin;
 
 type RouteHandler = (input: PluginApiRequestInput, shared: Shared) => Promise<PluginApiResponse>;
 
+/**
+ * The status of each connect outcome, and the title that oauth-callback shows.
+ * Both finish routes use this table, so one outcome has one status. 400: the
+ * operator can remove the cause and connect again. 502: LinkedIn failed. 500:
+ * the plugin failed.
+ */
+const CONNECT_RESULTS: Record<ConnectOutcome["kind"], { status: number; title: string }> = {
+  connected: { status: 200, title: "LinkedIn Page connected" },
+  declined: { status: 400, title: "LinkedIn authorization was declined" },
+  incomplete_redirect: { status: 400, title: "Missing code or state" },
+  invalid_state: { status: 400, title: "Could not connect the Page" },
+  code_refused: { status: 400, title: "Could not connect the Page" },
+  grant_refused: { status: 400, title: "Could not connect the Page" },
+  no_page: { status: 400, title: "Could not connect the Page" },
+  linkedin_failed: { status: 502, title: "Could not connect the Page" },
+  plugin_failed: { status: 500, title: "Could not connect the Page" },
+};
+
 /** One handler for each manifest route. A manifest route without a handler fails the type check. */
 const routes: Record<RouteKey, RouteHandler> = {
   async "list-pages"({ companyId }, { pages }) {
@@ -270,41 +290,33 @@ const routes: Record<RouteKey, RouteHandler> = {
   },
 
   async "oauth-callback"({ companyId, actor, query }, { pages }) {
-    const code = String(query.code ?? "");
-    const state = String(query.state ?? "");
-    const oauthError = query.error ? String(query.error) : null;
-    if (oauthError) {
-      return callbackResult(400,
-        "LinkedIn authorization was declined",
-        `${oauthError}: ${String(query.error_description ?? "")}`,
-      );
-    }
-    if (!code || !state) {
-      return callbackResult(400, "Missing code or state", "LinkedIn did not return an authorization code.");
-    }
-    try {
-      const connected = await pages.finishConnect(companyId, code, state, actor.actorId);
-      return callbackResult(200,
-        "LinkedIn Page connected",
-        `Connected: ${connected.map((p) => p.name ?? p.organizationUrn).join(", ")}. You can close this tab.`,
-      );
-    } catch (err) {
-      return callbackResult(400, "Could not connect the Page", (err as Error).message);
-    }
+    const outcome = await pages.finishConnect(companyId, query, actor.actorId);
+    const { status, title } = CONNECT_RESULTS[outcome.kind];
+    return callbackResult(
+      status,
+      title,
+      outcome.kind === "connected"
+        ? `Connected: ${outcome.pages.map((p) => p.name ?? p.organizationUrn).join(", ")}. You can close this tab.`
+        : outcome.reason,
+    );
   },
 
   async "oauth-complete"({ companyId, actor, body }, { pages }) {
-    const { code, state } = (body ?? {}) as { code?: string; state?: string };
-    if (!code || !state) {
-      return { status: 400, body: { error: "code and state are required" } };
-    }
-    const connected = await pages.finishConnect(companyId, code, state, actor.actorId);
-    return { status: 200, body: { connected } };
+    const outcome = await pages.finishConnect(companyId, (body ?? {}) as LinkedInRedirect, actor.actorId);
+    return {
+      status: CONNECT_RESULTS[outcome.kind].status,
+      body:
+        outcome.kind === "connected"
+          ? { connected: outcome.pages }
+          : { error: outcome.reason, kind: outcome.kind },
+    };
   },
 
   async disconnect({ companyId, params }, { pages }) {
     const organizationRef = params.organizationId;
-    await pages.disconnect(companyId, organizationRef);
+    if (!(await pages.disconnect(companyId, organizationRef))) {
+      return { status: 404, body: { error: `The company has no Page connection for Page ${organizationRef}.` } };
+    }
     return { status: 200, body: { disconnected: organizationRef } };
   },
 };
