@@ -4,7 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { PluginApiRequestInput, PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
-import { LINKEDIN_ORG_SCOPES } from "../src/adapters/linkedin/constants.js";
+import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 
 /** The schema the migration names directly; see migrations/0001_pages.sql. */
 const NAMESPACE = "plugin_linkedin_org_670c26f221";
@@ -51,7 +51,7 @@ export function tokenResponse(overrides: Record<string, unknown> = {}): Response
     expires_in: SIXTY_DAYS_S,
     refresh_token: "refresh-1",
     refresh_token_expires_in: 365 * 24 * 60 * 60,
-    scope: LINKEDIN_ORG_SCOPES.join(","),
+    scope: REQUESTED_SCOPES.join(","),
     ...overrides,
   });
 }
@@ -154,7 +154,7 @@ export interface World {
   /** Secret values by secretId. */
   secrets: Record<string, string>;
   dek: string;
-  /** Raw SQL against the plugin schema, for at-rest assertions only. */
+  /** Raw SQL against the plugin schema, for at-rest setup and assertions only. */
   sql<T = Record<string, unknown>>(statement: string, params?: unknown[]): Promise<T[]>;
   /** Add a company row so page_connections can reference it. */
   addCompany(): Promise<string>;
@@ -222,6 +222,17 @@ export async function createWorld(): Promise<World> {
   configs.set(companyId, pluginConfig());
 
   return { harness, ctx: harness.ctx, linkedin, companyId, configs, secrets, dek, sql, addCompany };
+}
+
+/**
+ * Give every Page connection the grant of a connect from before the feed
+ * scopes. Connect refuses that grant now, so only stored rows can hold it.
+ */
+export async function revertToGrantBeforeFeedScopes(world: World): Promise<void> {
+  await world.sql(
+    `update ${world.ctx.db.namespace}.page_connections
+        set scopes = '{r_organization_social,w_organization_social,rw_organization_admin}'`,
+  );
 }
 
 export function routeInput(

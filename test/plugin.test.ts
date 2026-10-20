@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import plugin from "../src/worker.js";
 import manifest from "../src/manifest.js";
-import { LINKEDIN_ORG_SCOPES } from "../src/adapters/linkedin/constants.js";
+import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import {
   ACME,
   COMMENTS_URL,
@@ -13,6 +13,7 @@ import {
   routeInput,
   wire,
   createWorld,
+  revertToGrantBeforeFeedScopes,
   type FakePage,
   type World,
 } from "./world.js";
@@ -69,6 +70,26 @@ describe("agent tools", () => {
     for (const [name, declaration] of register.mock.calls) {
       expect(declaration).toBe(declarations.find((t) => t.name === name));
     }
+  });
+
+  it("checks the scopes of the action that each tool does", async () => {
+    await connect([ACME]);
+    await revertToGrantBeforeFeedScopes(world);
+    world.linkedin.scriptActions();
+
+    expect(await tool("linkedin-page-post", { text: "Hi" })).toHaveProperty("content");
+    for (const [name, action] of [
+      ["linkedin-page-react", "react"],
+      ["linkedin-page-comment", "comment"],
+    ] as const) {
+      expect(await tool(name, { postUrn: "urn:li:share:1", text: "Nice" })).toEqual({
+        error:
+          `Page 111 was connected without w_organization_social_feed, which ${action} needs. ` +
+          "Reconnect the Page in Settings.",
+      });
+    }
+    expect(world.linkedin.requestsTo(REACTIONS_URL)).toHaveLength(0);
+    expect(world.linkedin.requestsTo(COMMENTS_URL)).toHaveLength(0);
   });
 });
 
@@ -190,7 +211,7 @@ describe("oauth-start route", () => {
       status: 200,
       body: {
         authorizationUrl: expect.stringMatching(/^https:\/\/www\.linkedin\.com\/oauth\/v2\/authorization\?/),
-        scopes: [...LINKEDIN_ORG_SCOPES],
+        scopes: [...REQUESTED_SCOPES],
       },
     });
   });

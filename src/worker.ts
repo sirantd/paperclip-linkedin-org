@@ -72,7 +72,7 @@ const plugin = definePlugin({
       async (params, run) => {
         const p = params as { text: string; organizationId?: string; visibility?: "PUBLIC" | "LOGGED_IN" };
         try {
-          return await pages.actAs(run.companyId, p.organizationId, async (page) => {
+          return await pages.actAs(run.companyId, p.organizationId, "post", async (page) => {
             const result = await publishAsOrganization(ctx.http, {
               accessToken: page.accessToken,
               organizationId: page.organizationId,
@@ -108,7 +108,7 @@ const plugin = definePlugin({
       async (params, run) => {
         const p = params as { postUrn: string; organizationId?: string; reactionType?: ReactionType };
         try {
-          return await pages.actAs(run.companyId, p.organizationId, async (page) => {
+          return await pages.actAs(run.companyId, p.organizationId, "react", async (page) => {
             await reactAsOrganization(ctx.http, {
               accessToken: page.accessToken,
               organizationId: page.organizationId,
@@ -129,7 +129,7 @@ const plugin = definePlugin({
       async (params, run) => {
         const p = params as { postUrn: string; text: string; organizationId?: string };
         try {
-          return await pages.actAs(run.companyId, p.organizationId, async (page) => {
+          return await pages.actAs(run.companyId, p.organizationId, "comment", async (page) => {
             await commentAsOrganization(ctx.http, {
               accessToken: page.accessToken,
               organizationId: page.organizationId,

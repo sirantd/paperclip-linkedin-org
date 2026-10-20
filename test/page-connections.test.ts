@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPageConnections, type PageConnections } from "../src/page-connections.js";
 import { openToken } from "../src/crypto.js";
-import { LINKEDIN_ORG_SCOPES } from "../src/adapters/linkedin/constants.js";
+import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LinkedInApiError } from "../src/adapters/linkedin/errors.js";
 import {
   ACME,
@@ -12,6 +12,7 @@ import {
   pluginConfig,
   tokenResponse,
   createWorld,
+  revertToGrantBeforeFeedScopes,
   type FakePage,
   type World,
 } from "./world.js";
@@ -39,7 +40,7 @@ async function connect(fakePages: FakePage[], tokens: Record<string, unknown> = 
 
 /** The acting Page that actAs hands to its work. */
 function actAs(organizationId?: string) {
-  return pages.actAs(world.companyId, organizationId, async (page) => page);
+  return pages.actAs(world.companyId, organizationId, "post", async (page) => page);
 }
 
 async function statusOf(organizationId: string) {
@@ -183,16 +184,16 @@ describe("actAs", () => {
   describe("the work", () => {
     it("returns the result of the work", async () => {
       await connect([ACME]);
-      expect(await pages.actAs(world.companyId, undefined, async (page) => `posted as ${page.displayName}`)).toBe(
-        "posted as Acme",
-      );
+      expect(
+        await pages.actAs(world.companyId, undefined, "post", async (page) => `posted as ${page.displayName}`),
+      ).toBe("posted as Acme");
     });
 
     it("expires the Page connection when LinkedIn rejects the token", async () => {
       await connect([ACME]);
       const rejected = new LinkedInApiError(401, 'LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}');
 
-      await expect(pages.actAs(world.companyId, undefined, () => Promise.reject(rejected))).rejects.toThrow(
+      await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(rejected))).rejects.toThrow(
         'LinkedIn rejected the token for Page 111 (LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
           "Reconnect the Page in Settings.",
       );
@@ -203,8 +204,28 @@ describe("actAs", () => {
       await connect([ACME]);
       const denied = new LinkedInApiError(403, "LinkedIn react 403: ACCESS_DENIED");
 
-      await expect(pages.actAs(world.companyId, undefined, () => Promise.reject(denied))).rejects.toBe(denied);
+      await expect(pages.actAs(world.companyId, undefined, "post", () => Promise.reject(denied))).rejects.toBe(denied);
       expect(await statusOf("111")).toBe("active");
+    });
+  });
+
+  describe("scopes", () => {
+    it("refuses an action without its scopes before it refreshes the token", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      await revertToGrantBeforeFeedScopes(world);
+
+      await expect(pages.actAs(world.companyId, undefined, "react", async (page) => page)).rejects.toThrow(
+        "Page 111 was connected without w_organization_social_feed, which react needs. " +
+          "Reconnect the Page in Settings.",
+      );
+      expect(world.linkedin.tokenCalls()).toHaveLength(1);
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it("allows an action whose scopes the Page connection holds", async () => {
+      await connect([ACME]);
+      await revertToGrantBeforeFeedScopes(world);
+      expect((await actAs()).organizationId).toBe("111");
     });
   });
 });
@@ -238,7 +259,7 @@ describe("startConnect", () => {
   it("returns the authorization URL and stores the OAuth state", async () => {
     const { authorizationUrl, scopes } = await pages.startConnect(world.companyId, "operator-1");
 
-    expect(scopes).toEqual(LINKEDIN_ORG_SCOPES);
+    expect(scopes).toEqual(REQUESTED_SCOPES);
     const url = new URL(authorizationUrl);
     expect(url.origin + url.pathname).toBe("https://www.linkedin.com/oauth/v2/authorization");
     expect(url.searchParams.get("response_type")).toBe("code");
@@ -246,7 +267,7 @@ describe("startConnect", () => {
     expect(url.searchParams.get("redirect_uri")).toBe(
       `https://paperclip.example.com${REDIRECT_PATH}?companyId=${world.companyId}`,
     );
-    expect(url.searchParams.get("scope")).toBe(LINKEDIN_ORG_SCOPES.join(" "));
+    expect(url.searchParams.get("scope")).toBe(REQUESTED_SCOPES.join(" "));
     const state = url.searchParams.get("state")!;
     expect(world.harness.getState({ scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` }))
       .toEqual({ createdAt: expect.any(Number), actorId: "operator-1" });
@@ -298,6 +319,15 @@ describe("finishConnect", () => {
     expect(row!.access_token_sealed).not.toContain("access-1");
     expect(openToken(row!.access_token_sealed, world.dek)).toBe("access-1");
     expect(openToken(row!.refresh_token_sealed, world.dek)).toBe("refresh-1");
+  });
+
+  it("stores the granted scopes", async () => {
+    const granted = ["w_organization_social", "w_organization_social_feed", "rw_organization_admin"];
+    await connect([ACME], { scope: granted.join(" ") });
+    const [row] = await world.sql<{ scopes: string[] }>(
+      `select scopes from ${world.ctx.db.namespace}.page_connections`,
+    );
+    expect(row!.scopes).toEqual(granted);
   });
 
   it("deletes the OAuth state after a successful connect", async () => {
@@ -363,6 +393,13 @@ describe("finishConnect", () => {
     expect(await pages.list(world.companyId)).toEqual([]);
   });
 
+  it("rejects a grant that names no scopes", async () => {
+    await expect(connect([ACME], { scope: undefined })).rejects.toThrow(
+      /^LinkedIn did not report the granted scopes/,
+    );
+    expect(await pages.list(world.companyId)).toEqual([]);
+  });
+
   it("rejects a member who administers no Page", async () => {
     await expect(connect([])).rejects.toThrow(
       "The authorizing member does not administer any LinkedIn Page. " +
@@ -390,7 +427,7 @@ describe("disconnect", () => {
 describe("configuration", () => {
   it("fails for a company with no plugin config", async () => {
     const other = await world.addCompany();
-    await expect(pages.actAs(other, undefined, async (page) => page)).rejects.toThrow(
+    await expect(pages.actAs(other, undefined, "post", async (page) => page)).rejects.toThrow(
       "LinkedIn Page plugin is not configured for this company",
     );
   });

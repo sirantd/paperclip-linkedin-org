@@ -22,6 +22,19 @@ _Avoid_: Page URN
 The LinkedIn member who approves the connection in the browser. This member must be an administrator of each Page that the plugin connects.
 _Avoid_: user, owner, admin
 
+**Scope**:
+A LinkedIn permission that a token carries, for example `w_organization_social`.
+_Avoid_: permission
+
+**Requested scopes**:
+The scopes that connect asks LinkedIn for.
+
+**Granted scopes**:
+The scopes that LinkedIn gives a token. LinkedIn can grant fewer scopes than connect requested. Each Page connection stores its granted scopes.
+
+**Needed scopes**:
+The scopes that one step (connect, post, react or comment) needs. Connect refuses a grant without the needed scopes of every step. An action refuses a Page connection without its needed scopes.
+
 ### Paperclip
 
 **Company**:
