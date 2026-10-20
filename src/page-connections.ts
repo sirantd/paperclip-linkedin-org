@@ -10,6 +10,7 @@ import {
 } from "./adapters/linkedin/scopes.js";
 import { LinkedInApiError, LinkedInOAuthError } from "./adapters/linkedin/errors.js";
 import { linkedInPage, type FileTransport, type PageCalls } from "./adapters/linkedin/page.js";
+import manifest from "./manifest.js";
 
 export type PageConnectionStatus = "active" | "expired" | "revoked";
 
@@ -306,7 +307,7 @@ async function loadCredentials(ctx: PluginContext, companyId: string): Promise<C
     // the companyId query param — LinkedIn compares before appending code/state.
     redirectUri:
       `${config.redirectBaseUrl.replace(/\/+$/, "")}` +
-      `/api/plugins/sirantd.linkedin-org/api/oauth/callback?companyId=${companyId}`,
+      `/api/plugins/${manifest.id}/api/oauth/callback?companyId=${companyId}`,
     defaultOrganizationRef: config.defaultOrganizationUrn || null,
   };
 }

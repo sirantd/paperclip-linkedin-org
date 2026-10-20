@@ -5,6 +5,7 @@ import { openToken } from "../src/crypto.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LinkedInApiError } from "../src/adapters/linkedin/errors.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
+import manifest from "../src/manifest.js";
 import {
   ACME,
   GLOBEX,
@@ -23,7 +24,7 @@ import {
   type World,
 } from "./world.js";
 
-const REDIRECT_PATH = "/api/plugins/sirantd.linkedin-org/api/oauth/callback";
+const REDIRECT_PATH = `/api/plugins/${manifest.id}/api/oauth/callback`;
 const NO_PAGE = "No LinkedIn Page is connected for this company. Connect one in Settings first.";
 
 let world: World;
