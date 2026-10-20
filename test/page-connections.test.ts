@@ -716,7 +716,7 @@ describe("finishConnect", () => {
           'LinkedIn refused the client credentials of the plugin (LinkedIn token endpoint 401: {"error":"invalid_client"} — ' +
           "client_id is valid if authorization succeeded, so this points at the stored Client Secret: " +
           "confirm it matches the app's current Primary Client Secret.). " +
-          "Correct clientIdRef or clientSecretRef in Settings, then connect again.",
+          "Correct clientSecretRef in the plugin config, then connect again.",
       });
       expect(world.harness.logs).toContainEqual({
         level: "error",

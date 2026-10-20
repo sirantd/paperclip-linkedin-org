@@ -593,12 +593,13 @@ async function completeOAuth(
       };
     }
     if (err instanceof LinkedInOAuthError && err.code === "invalid_client") {
-      // A settings fault: the message of auth.ts names the Client Secret.
+      // A settings fault. The authorization used the same Client ID and
+      // succeeded, so the Client Secret is the wrong value.
       return {
         kind: "plugin_failed",
         reason:
           `LinkedIn refused the client credentials of the plugin (${err.message}). ` +
-          "Correct clientIdRef or clientSecretRef in Settings, then connect again.",
+          "Correct clientSecretRef in the plugin config, then connect again.",
       };
     }
     return {
