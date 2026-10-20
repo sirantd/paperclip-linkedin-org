@@ -252,9 +252,9 @@ async function handleApiRequest(input: PluginApiRequestInput): Promise<PluginApi
       }
 
       case "disconnect": {
-        const organizationId = input.params.organizationId;
-        await pages.disconnect(companyId, organizationId);
-        return { status: 200, body: { disconnected: organizationId } };
+        const organizationRef = input.params.organizationId;
+        await pages.disconnect(companyId, organizationRef);
+        return { status: 200, body: { disconnected: organizationRef } };
       }
 
       default:

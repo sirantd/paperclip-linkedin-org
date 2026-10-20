@@ -32,7 +32,8 @@ function secretRef(title: string, description: string): JsonSchema {
 const organizationIdParam: JsonSchema = {
   type: "string",
   description:
-    "Numeric organization id of the Page to act as, from linkedin-page-list. If you omit it, " +
+    "Organization id (12345) or Organization URN (urn:li:organization:12345) of the Page to act as, " +
+    "from linkedin-page-list. If you omit it, " +
     "the tool uses the default Page, else the only active Page. If several Pages are active " +
     "and no default Page is set, the call fails.",
 };
@@ -61,9 +62,9 @@ const instanceConfigSchema: JsonSchema = {
     ),
     defaultOrganizationUrn: {
       type: "string",
-      title: "Default Page (organization URN)",
+      title: "Default Page (organization URN or id)",
       description:
-        "Optional. urn:li:organization:{id} used when an agent calls a tool without naming a page. Populated by the settings page once a Page is connected.",
+        "Optional. urn:li:organization:{id} or the organization id, used when an agent calls a tool without naming a page. Populated by the settings page once a Page is connected.",
     },
   },
 };

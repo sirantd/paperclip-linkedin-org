@@ -10,6 +10,15 @@ export interface AdministeredPage {
 }
 
 /**
+ * The organization id that an organization reference names: the id itself
+ * (`12345`) or the Organization URN (`urn:li:organization:12345`). Null for
+ * any other text.
+ */
+export function organizationIdOf(organizationRef: string): string | null {
+  return /^(?:urn:li:organization:)?(\d+)$/.exec(organizationRef.trim())?.[1] ?? null;
+}
+
+/**
  * List the Pages the authorizing member administers.
  *
  * This is the source of truth for which Pages this connection may act as —
