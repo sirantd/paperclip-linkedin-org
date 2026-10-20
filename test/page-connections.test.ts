@@ -145,6 +145,19 @@ describe("actAs", () => {
       expect(refreshTokens).toEqual(["refresh-1", "refresh-1"]);
     });
 
+    it("shares one refresh between concurrent calls", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
+
+      const acting = await Promise.all([actAs(), actAs()]);
+
+      expect(acting.map((page) => page.accessToken)).toEqual(["access-2", "access-2"]);
+      expect(world.linkedin.tokenCalls().map((call) => call.get("grant_type"))).toEqual([
+        "authorization_code",
+        "refresh_token",
+      ]);
+    });
+
     it("expires the Page connection when no refresh token is stored", async () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S, refresh_token: undefined });
 

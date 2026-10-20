@@ -99,11 +99,14 @@ interface PageConnectionRow {
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 export function createPageConnections(ctx: PluginContext): PageConnections {
+  /** The refresh in progress for each Page connection, by row id; concurrent calls share it. */
+  const refreshes = new Map<string, Promise<string>>();
+
   return {
     async actAs(companyId, organizationId, work) {
       const creds = await loadCredentials(ctx, companyId);
       const row = await findConnection(ctx, companyId, organizationId ?? creds.defaultOrganizationId);
-      const accessToken = await accessTokenFor(ctx, companyId, creds, row);
+      const accessToken = await accessTokenFor(ctx, companyId, creds, row, refreshes);
       try {
         return await work({
           organizationId: row.organization_id,
@@ -246,11 +249,28 @@ async function accessTokenFor(
   companyId: string,
   creds: Credentials,
   row: PageConnectionRow,
+  refreshes: Map<string, Promise<string>>,
 ): Promise<string> {
   const expiresAt = new Date(row.expires_at).getTime();
   if (Date.now() < expiresAt - REFRESH_SKEW_MS) {
     return openToken(row.access_token_sealed, creds.dek);
   }
+
+  // Two refreshes of one Page connection would race to store their tokens.
+  let refresh = refreshes.get(row.id);
+  if (!refresh) {
+    refresh = refreshAccessToken(ctx, companyId, creds, row).finally(() => refreshes.delete(row.id));
+    refreshes.set(row.id, refresh);
+  }
+  return refresh;
+}
+
+async function refreshAccessToken(
+  ctx: PluginContext,
+  companyId: string,
+  creds: Credentials,
+  row: PageConnectionRow,
+): Promise<string> {
   if (!row.refresh_token_sealed) {
     await markExpired(ctx, row.id);
     throw new Error(
