@@ -1,9 +1,6 @@
 import type { PluginHttpClient } from "@paperclipai/plugin-sdk";
-import {
-  LINKEDIN_AUTHORIZE_URL,
-  LINKEDIN_ORG_SCOPES,
-  LINKEDIN_TOKEN_URL,
-} from "./constants.js";
+import { LINKEDIN_AUTHORIZE_URL, LINKEDIN_TOKEN_URL } from "./constants.js";
+import { REQUESTED_SCOPES } from "./scopes.js";
 
 export interface LinkedInTokens {
   accessToken: string;
@@ -24,7 +21,7 @@ export function buildAuthorizationUrl(input: {
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("state", input.state);
-  url.searchParams.set("scope", LINKEDIN_ORG_SCOPES.join(" "));
+  url.searchParams.set("scope", REQUESTED_SCOPES.join(" "));
   return url.toString();
 }
 
@@ -88,27 +85,4 @@ export function refreshTokens(
     client_id: input.clientId,
     client_secret: input.clientSecret,
   });
-}
-
-/**
- * Verify the granted scopes actually include organization write access.
- *
- * LinkedIn silently drops scopes the app is not approved for rather than
- * failing the authorization, so a connection can look healthy right up until
- * the first publish returns 403. Checking at connect time turns that into a
- * clear error during setup.
- */
-export function assertOrgScopesGranted(tokens: LinkedInTokens): void {
-  if (!tokens.scope) return; // Nothing to check against; publish will surface it.
-  const granted = new Set(tokens.scope.split(/[\s,]+/).filter(Boolean));
-  const missing = ["w_organization_social", "w_organization_social_feed", "rw_organization_admin"].filter(
-    (s) => !granted.has(s),
-  );
-  if (missing.length > 0) {
-    throw new Error(
-      `LinkedIn did not grant ${missing.join(", ")}. Confirm the app is approved ` +
-        `for the Community Management API product and that the authorizing member ` +
-        `is an administrator of the Page. Granted: ${tokens.scope}`,
-    );
-  }
 }

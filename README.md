@@ -17,7 +17,22 @@ run side by side and do not share state.
 
 ## Scopes
 
-`r_organization_social w_organization_social rw_organization_admin`
+Connect requests each scope in this table. It refuses a grant that lacks a
+scope that any step needs. An agent tool refuses to act as a Page whose connection lacks a
+scope that the action needs, and tells the operator to reconnect the Page.
+
+| Scope | Needed for |
+|---|---|
+| `r_organization_social` | none |
+| `w_organization_social` | post, react, comment |
+| `r_organization_social_feed` | none |
+| `w_organization_social_feed` | react, comment |
+| `rw_organization_admin` | connect |
+
+Connect uses `rw_organization_admin` to list the Pages that the authorizing
+member administers. No step needs the two `r_` scopes. The live test of
+2026-09-29 added them together with the feed scopes, so it does not show that
+react and comment work without them.
 
 No `openid`/`profile`/`email`: those belong to Sign In with LinkedIn, a separate
 product. Requesting them from a Community-Management-only app fails the whole
@@ -79,9 +94,9 @@ Live-tested 2026-09-29 against two connected Pages (PER-2499):
 - **Reactions / comments: need the `*_social_feed` scopes.** With only
   `w_organization_social`, LinkedIn returns 403 ACCESS_DENIED
   (`partnerApiSocialActions.CREATE` / `partnerApiReactions.CREATE`), even on the Page's
-  own post. `LINKEDIN_ORG_SCOPES` now requests `r_/w_organization_social_feed`. Pages
-  connected before this change must be reconnected via `oauth-start` before comment
-  and react will work.
+  own post. Connect now requests `r_/w_organization_social_feed`. A Page connected
+  before this change refuses react and comment with a message that names the
+  missing scope. Reconnect it via `oauth-start`.
 - **Unverified:** the `/rest/organizations?ids=List(...)` batch projection.
 
 There is no settings UI yet; configure via the plugin config API.

@@ -1,14 +1,13 @@
 import type { EnvSecretRefBinding, PluginContext, ScopeKey } from "@paperclipai/plugin-sdk";
 import { openToken, sealToken } from "./crypto.js";
-import {
-  assertOrgScopesGranted,
-  buildAuthorizationUrl,
-  exchangeCode,
-  refreshTokens,
-  type LinkedInTokens,
-} from "./adapters/linkedin/auth.js";
+import { buildAuthorizationUrl, exchangeCode, refreshTokens, type LinkedInTokens } from "./adapters/linkedin/auth.js";
 import { listAdministeredPages, type AdministeredPage } from "./adapters/linkedin/orgs.js";
-import { LINKEDIN_ORG_SCOPES } from "./adapters/linkedin/constants.js";
+import {
+  REQUESTED_SCOPES,
+  grantedScopes,
+  missingScopes,
+  type PageAction,
+} from "./adapters/linkedin/scopes.js";
 import { LinkedInApiError } from "./adapters/linkedin/errors.js";
 
 export type PageConnectionStatus = "active" | "expired" | "revoked";
@@ -43,11 +42,13 @@ export interface PageConnections {
   /**
    * Choose the acting Page and run `work` as it with a fresh access token. The
    * Page is the named one, else the default Page, else the only active Page.
+   * A Page connection without a scope that `action` needs refuses the action.
    * If LinkedIn rejects the token (401), the Page connection becomes expired.
    */
   actAs<T>(
     companyId: string,
     organizationId: string | undefined,
+    action: PageAction,
     work: (page: ActingPage) => Promise<T>,
   ): Promise<T>;
   /** Every Page connection of the company, in any status, by name with unnamed Pages last. */
@@ -56,7 +57,7 @@ export interface PageConnections {
   startConnect(
     companyId: string,
     operatorId: string,
-  ): Promise<{ authorizationUrl: string; scopes: typeof LINKEDIN_ORG_SCOPES }>;
+  ): Promise<{ authorizationUrl: string; scopes: readonly string[] }>;
   /** Finish connect: one active Page connection for each Page the authorizing member administers. */
   finishConnect(companyId: string, code: string, state: string, operatorId: string): Promise<AdministeredPage[]>;
   disconnect(companyId: string, organizationId: string): Promise<void>;
@@ -106,9 +107,16 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
   const refreshes = new Map<string, Promise<string>>();
 
   return {
-    async actAs(companyId, organizationId, work) {
+    async actAs(companyId, organizationId, action, work) {
       const creds = await loadCredentials(ctx, companyId);
       const row = await findConnection(ctx, companyId, organizationId ?? creds.defaultOrganizationId);
+      const missing = missingScopes(row.scopes, action);
+      if (missing.length > 0) {
+        throw new Error(
+          `Page ${row.organization_id} was connected without ${missing.join(", ")}, which ${action} needs. ` +
+            "Reconnect the Page in Settings.",
+        );
+      }
       const accessToken = await accessTokenFor(ctx, companyId, creds, row, refreshes);
       try {
         return await work({
@@ -153,7 +161,7 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
           redirectUri: creds.redirectUri,
           state,
         }),
-        scopes: LINKEDIN_ORG_SCOPES,
+        scopes: REQUESTED_SCOPES,
       };
     },
 
@@ -323,8 +331,8 @@ function markExpired(ctx: PluginContext, id: string): Promise<{ rowCount: number
 }
 
 /**
- * Exchange an authorization code, verify org scopes were actually granted, and
- * upsert one connection row per Page the authorizing member administers.
+ * Exchange an authorization code, check the granted scopes, and upsert one
+ * connection row per Page the authorizing member administers.
  */
 async function completeOAuth(
   ctx: PluginContext,
@@ -348,7 +356,7 @@ async function completeOAuth(
     clientSecret: creds.clientSecret,
     redirectUri: creds.redirectUri,
   });
-  assertOrgScopesGranted(tokens);
+  const scopes = grantedScopes(tokens.scope);
 
   const pages = await listAdministeredPages(ctx.http, tokens.accessToken);
   if (pages.length === 0) {
@@ -387,7 +395,7 @@ async function completeOAuth(
           page.vanityName,
           actorId,
           null, // member URN unavailable without the openid scope
-          (tokens.scope ?? LINKEDIN_ORG_SCOPES.join(" ")).split(/[\s,]+/).filter(Boolean).join(","),
+          scopes.join(","),
           sealToken(tokens.accessToken, creds.dek),
           tokens.refreshToken ? sealToken(tokens.refreshToken, creds.dek) : null,
           new Date(tokens.expiresAt).toISOString(),

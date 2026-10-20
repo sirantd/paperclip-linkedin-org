@@ -1,29 +1,4 @@
-/**
- * LinkedIn Community Management API constants.
- *
- * Organization-scoped permissions are only granted to apps approved for the
- * Community Management API product. `r_organization_social` and
- * `w_organization_social` cover reading and writing Page content;
- * `rw_organization_admin` is needed to enumerate the Pages the authorizing
- * member administers via /rest/organizationAcls.
- * `w_organization_social_feed` / `r_organization_social_feed` are required for
- * comments and reactions as the Page: live-tested 2026-09-29 (PER-2499), a
- * token with only `w_organization_social` can create posts but gets 403
- * ACCESS_DENIED on partnerApiSocialActions.CREATE / partnerApiReactions.CREATE.
- *
- * Deliberately no `openid`/`profile`/`email`: those belong to the separate
- * Sign In with LinkedIn product. An app approved only for Community Management
- * rejects the whole authorization with unauthorized_scope_error if they are
- * requested. Consequence: we cannot call /v2/userinfo, so the authorizing
- * member URN is not recorded.
- */
-export const LINKEDIN_ORG_SCOPES = [
-  "r_organization_social",
-  "w_organization_social",
-  "r_organization_social_feed",
-  "w_organization_social_feed",
-  "rw_organization_admin",
-] as const;
+/** LinkedIn Community Management API constants. Scopes live in scopes.ts. */
 
 /**
  * Versioned REST API (YYYYMM). LinkedIn supports each version for a minimum of
