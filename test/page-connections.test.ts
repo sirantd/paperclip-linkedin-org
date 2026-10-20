@@ -169,7 +169,7 @@ describe("actAs", () => {
       await expect(actAs()).rejects.toThrow(NO_PAGE);
     });
 
-    it("expires the Page connection when the refresh fails", async () => {
+    it("expires the Page connection when LinkedIn refuses the refresh token", async () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S });
       world.linkedin.scriptRefresh(() => json({ error: "invalid_grant" }, 400));
 
@@ -178,6 +178,42 @@ describe("actAs", () => {
           "Reconnect the Page in Settings.",
       );
       expect(await statusOf("111")).toBe("expired");
+    });
+
+    it.each([
+      ["a LinkedIn outage", () => json({ message: "Service Unavailable" }, 503)],
+      ["a wrong Client Secret", () => json({ error: "invalid_client" }, 401)],
+      [
+        "a network error",
+        () => {
+          throw new TypeError("fetch failed");
+        },
+      ],
+    ])("keeps the Page connection active after %s", async (_cause, respond) => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(respond);
+
+      await expect(actAs()).rejects.toThrow(
+        /^Refreshing the LinkedIn token for Page 111 failed \(.+\)\. The Page connection stays active\.$/,
+      );
+      expect(await statusOf("111")).toBe("active");
+    });
+
+    it("names the Client Secret when LinkedIn refuses the client", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => json({ error: "invalid_client" }, 401));
+
+      await expect(actAs()).rejects.toThrow("confirm it matches the app's current Primary Client Secret");
+    });
+
+    it("tries the refresh again on the next call after a failed refresh", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => json({}, 503));
+      await expect(actAs()).rejects.toThrow();
+
+      world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
+
+      expect((await actAs()).accessToken).toBe("access-2");
     });
   });
 
