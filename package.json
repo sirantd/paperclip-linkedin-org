@@ -15,6 +15,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@paperclipai/plugin-sdk": "^2026.720.0",
     "@types/node": "^24.6.0",
     "esbuild": "^0.28.2",
