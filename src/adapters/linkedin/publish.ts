@@ -8,6 +8,8 @@ import {
 } from "./constants.js";
 import { LinkedInApiError } from "./errors.js";
 
+export type ReactionType = "LIKE" | "PRAISE" | "EMPATHY" | "INTEREST" | "APPRECIATION";
+
 export interface PublishResult {
   postUrn: string;
   permalink: string | null;
@@ -70,7 +72,7 @@ export async function reactAsOrganization(
     accessToken: string;
     organizationId: string;
     postUrn: string;
-    reactionType?: "LIKE" | "PRAISE" | "EMPATHY" | "INTEREST" | "APPRECIATION";
+    reactionType?: ReactionType;
   },
 ): Promise<void> {
   const actor = organizationUrn(input.organizationId);

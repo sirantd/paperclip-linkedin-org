@@ -13,7 +13,9 @@ import {
   commentAsOrganization,
   publishAsOrganization,
   reactAsOrganization,
+  type ReactionType,
 } from "./adapters/linkedin/publish.js";
+import manifest from "./manifest.js";
 
 /**
  * The host hands the live PluginContext to setup() only; onApiRequest() is a
@@ -33,6 +35,17 @@ function pageRow(page: PageSummary) {
   };
 }
 
+/**
+ * The manifest declaration of an agent tool. The host shows agents the
+ * manifest text only and never reads the declaration given to
+ * ctx.tools.register, so the manifest is the one source.
+ */
+function declared(name: string) {
+  const tool = manifest.tools?.find((t) => t.name === name);
+  if (!tool) throw new Error(`Agent tool ${name} is not declared in the manifest`);
+  return tool;
+}
+
 const plugin = definePlugin({
   async setup(ctx: PluginContext) {
     const pages = createPageConnections(ctx);
@@ -41,12 +54,7 @@ const plugin = definePlugin({
 
     ctx.tools.register(
       "linkedin-page-list",
-      {
-        displayName: "List LinkedIn Pages",
-        description:
-          "List the company LinkedIn Pages connected to Paperclip that agents can publish as.",
-        parametersSchema: { type: "object", properties: {} },
-      },
+      declared("linkedin-page-list"),
       async (_params, run) => {
         const listed = await pages.list(run.companyId);
         return {
@@ -60,23 +68,7 @@ const plugin = definePlugin({
 
     ctx.tools.register(
       "linkedin-page-post",
-      {
-        displayName: "Post as LinkedIn Page",
-        description:
-          "Publish a post authored by the company LinkedIn Page. The post is public and immediately live — do not call this to draft or preview.",
-        parametersSchema: {
-          type: "object",
-          required: ["text"],
-          properties: {
-            text: { type: "string", description: "Post body. Plain text; LinkedIn renders line breaks." },
-            organizationId: {
-              type: "string",
-              description: "Numeric organization id. Optional when exactly one Page is connected.",
-            },
-            visibility: { type: "string", enum: ["PUBLIC", "LOGGED_IN"], default: "PUBLIC" },
-          },
-        },
-      },
+      declared("linkedin-page-post"),
       async (params, run) => {
         const p = params as { text: string; organizationId?: string; visibility?: "PUBLIC" | "LOGGED_IN" };
         try {
@@ -112,25 +104,9 @@ const plugin = definePlugin({
 
     ctx.tools.register(
       "linkedin-page-react",
-      {
-        displayName: "React as LinkedIn Page",
-        description: "React to a LinkedIn post as the company Page.",
-        parametersSchema: {
-          type: "object",
-          required: ["postUrn"],
-          properties: {
-            postUrn: { type: "string", description: "urn:li:activity:… / urn:li:share:… / urn:li:ugcPost:…" },
-            organizationId: { type: "string" },
-            reactionType: {
-              type: "string",
-              enum: ["LIKE", "PRAISE", "EMPATHY", "INTEREST", "APPRECIATION"],
-              default: "LIKE",
-            },
-          },
-        },
-      },
+      declared("linkedin-page-react"),
       async (params, run) => {
-        const p = params as { postUrn: string; organizationId?: string; reactionType?: never };
+        const p = params as { postUrn: string; organizationId?: string; reactionType?: ReactionType };
         try {
           return await pages.actAs(run.companyId, p.organizationId, async (page) => {
             await reactAsOrganization(ctx.http, {
@@ -149,19 +125,7 @@ const plugin = definePlugin({
 
     ctx.tools.register(
       "linkedin-page-comment",
-      {
-        displayName: "Comment as LinkedIn Page",
-        description: "Comment on a LinkedIn post as the company Page.",
-        parametersSchema: {
-          type: "object",
-          required: ["postUrn", "text"],
-          properties: {
-            postUrn: { type: "string" },
-            text: { type: "string" },
-            organizationId: { type: "string" },
-          },
-        },
-      },
+      declared("linkedin-page-comment"),
       async (params, run) => {
         const p = params as { postUrn: string; text: string; organizationId?: string };
         try {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import plugin from "../src/worker.js";
+import manifest from "../src/manifest.js";
 import { LINKEDIN_ORG_SCOPES } from "../src/adapters/linkedin/constants.js";
 import {
   ACME,
@@ -55,6 +56,21 @@ async function listPages() {
   const res = await route("list-pages", { query: { companyId: world.companyId } });
   return (wire(res.body) as { pages: Array<Record<string, unknown>> }).pages;
 }
+
+describe("agent tools", () => {
+  it("registers each manifest tool with its manifest declaration", async () => {
+    const register = vi.spyOn(world.ctx.tools, "register");
+    await plugin.definition.setup(world.ctx);
+
+    const declarations = manifest.tools ?? [];
+    expect(register.mock.calls.map(([name]) => name).sort()).toEqual(
+      declarations.map((t) => t.name).sort(),
+    );
+    for (const [name, declaration] of register.mock.calls) {
+      expect(declaration).toBe(declarations.find((t) => t.name === name));
+    }
+  });
+});
 
 describe("linkedin-page-post", () => {
   it("posts as the acting Page and logs the activity", async () => {
