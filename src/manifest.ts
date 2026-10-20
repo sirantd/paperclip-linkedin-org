@@ -70,7 +70,7 @@ const instanceConfigSchema: JsonSchema = {
       type: "string",
       title: "Default Page (organization URN or id)",
       description:
-        "Optional. urn:li:organization:{id} or the organization id, used when an agent calls a tool without naming a page. Populated by the settings page once a Page is connected.",
+        "Optional. urn:li:organization:{id} or the organization id, used when an agent calls a tool without naming a page. Connect does not set it. Set it in the plugin config after you connect the Page.",
     },
   },
 };
