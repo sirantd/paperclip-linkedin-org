@@ -261,9 +261,9 @@ type RouteHandler = (input: PluginApiRequestInput, shared: Shared) => Promise<Pl
  * The status of each connect outcome, and the title that oauth-callback shows.
  * Both finish routes use this table, so one outcome has one status. 400: the
  * operator can remove the cause and connect again. 502: LinkedIn failed. 500:
- * the plugin failed.
+ * the plugin failed. The connect outcome table of README.md shows each status.
  */
-const CONNECT_RESULTS: Record<ConnectOutcome["kind"], { status: number; title: string }> = {
+export const CONNECT_RESULTS: Record<ConnectOutcome["kind"], { status: number; title: string }> = {
   connected: { status: 200, title: "LinkedIn Page connected" },
   declined: { status: 400, title: "LinkedIn authorization was declined" },
   incomplete_redirect: { status: 400, title: "Missing code or state" },

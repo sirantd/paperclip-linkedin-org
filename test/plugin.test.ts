@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
-import { createPlugin } from "../src/worker.js";
+import { readFileSync } from "node:fs";
+import { CONNECT_RESULTS, createPlugin } from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
@@ -594,6 +595,14 @@ describe("finish routes", () => {
       status: 500,
       body: { kind: "plugin_failed" },
     });
+  });
+
+  it("give the statuses that README.md shows", () => {
+    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+    const section = readme.split("\n## Connect\n")[1]!.split("\n## ")[0]!;
+    const rows = [...section.matchAll(/^\| `(\w+)` \| (\d{3}) \|/gm)].map(([, kind, status]) => [kind, Number(status)]);
+
+    expect(rows).toEqual(Object.entries(CONNECT_RESULTS).map(([kind, { status }]) => [kind, status]));
   });
 });
 
