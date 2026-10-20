@@ -3,6 +3,7 @@ import type {
   PluginContext,
   PluginApiRequestInput,
   PluginApiResponse,
+  PluginHttpClient,
 } from "@paperclipai/plugin-sdk";
 import {
   createPageConnections,
@@ -13,10 +14,27 @@ import {
   commentAsOrganization,
   publishAsOrganization,
   reactAsOrganization,
+  type PostMedia,
   type ReactionType,
 } from "./adapters/linkedin/publish.js";
+import {
+  ACCEPTED_FILES,
+  MAX_MEDIA_BYTES,
+  mediaKindForContentType,
+  mediaKindOfUrn,
+  mediaState,
+  requirePostable,
+  uploadMedia,
+} from "./adapters/linkedin/media.js";
 import { LINKEDIN_VERSION, versionWarning } from "./adapters/linkedin/constants.js";
 import manifest from "./manifest.js";
+
+/**
+ * The Node fetch, for the upload of file bytes only: ctx.http sends a body
+ * that is not a string as String(body). This request skips the host tracing
+ * and audit log. The lookup is at call time, so a test can replace fetch.
+ */
+const nodeHttp: PluginHttpClient = { fetch: (url, init) => fetch(url, init) };
 
 /**
  * The host hands the live PluginContext to setup() only; onApiRequest() is a
@@ -70,17 +88,96 @@ const plugin = definePlugin({
     );
 
     ctx.tools.register(
+      "linkedin-page-upload",
+      declared("linkedin-page-upload"),
+      async (params, run) => {
+        const p = params as { attachmentId: string; organizationId?: string };
+        try {
+          const file = await ctx.issues.getAttachmentContent(p.attachmentId, run.companyId, {
+            maxBytes: MAX_MEDIA_BYTES,
+          });
+          if (!file) {
+            throw new Error(`Attachment ${p.attachmentId} was not found, or the plugin cannot read its issue.`);
+          }
+          const kind = mediaKindForContentType(file.contentType);
+          if (!kind) throw new Error(`LinkedIn does not accept ${file.contentType}. Attach ${ACCEPTED_FILES}.`);
+          const fileName = file.originalFilename ?? file.attachmentId;
+
+          return await pages.actAs(run.companyId, p.organizationId, "upload", async (page) => {
+            const mediaUrn = await uploadMedia(ctx.http, nodeHttp, {
+              accessToken: page.accessToken,
+              organizationId: page.organizationId,
+              kind,
+              contentType: file.contentType,
+              bytes: Buffer.from(file.contentBase64, "base64"),
+            });
+            // If this read fails, the uploaded file stays unused at LinkedIn. A post
+            // with the file needs the same read, so retrying the upload is the fix.
+            const { status } = await mediaState(ctx.http, { accessToken: page.accessToken, mediaUrn, kind });
+            await ctx.activity.log({
+              companyId: run.companyId,
+              message: `Uploaded ${fileName} for ${page.displayName}`,
+              entityType: "linkedin_page_media",
+              entityId: mediaUrn,
+              metadata: {
+                mediaUrn,
+                attachmentId: file.attachmentId,
+                sha256: file.sha256,
+                contentType: file.contentType,
+                byteSize: file.byteSize,
+                organizationId: page.organizationId,
+                agentId: run.agentId,
+                runId: run.runId,
+              },
+            });
+            return {
+              content:
+                `Uploaded ${fileName} for ${page.displayName} as ${mediaUrn} (${status}). ` +
+                `Pass mediaUrn to linkedin-page-post${kind === "document" ? " with a title" : ""}.`,
+              data: { mediaUrn, status, kind, originalFilename: file.originalFilename },
+            };
+          });
+        } catch (err) {
+          return { error: (err as Error).message };
+        }
+      },
+    );
+
+    ctx.tools.register(
       "linkedin-page-post",
       declared("linkedin-page-post"),
       async (params, run) => {
-        const p = params as { text: string; organizationId?: string; visibility?: "PUBLIC" | "LOGGED_IN" };
+        const p = params as {
+          text: string;
+          organizationId?: string;
+          visibility?: "PUBLIC" | "LOGGED_IN";
+          mediaUrn?: string;
+          title?: string;
+          altText?: string;
+        };
         try {
+          const kind = p.mediaUrn ? mediaKindOfUrn(p.mediaUrn) : null;
+          if (p.mediaUrn && !kind) {
+            throw new Error(
+              `${p.mediaUrn} is not an image or a document. Pass the mediaUrn that linkedin-page-upload returned.`,
+            );
+          }
+          if (kind === "document" && !p.title) throw new Error("A post with a document needs a title.");
+          const media: PostMedia | undefined = p.mediaUrn
+            ? { id: p.mediaUrn, ...(p.title && { title: p.title }), ...(p.altText && { altText: p.altText }) }
+            : undefined;
+
           return await pages.actAs(run.companyId, p.organizationId, "post", async (page) => {
+            if (media && kind) {
+              const state = await mediaState(ctx.http, { accessToken: page.accessToken, mediaUrn: media.id, kind });
+              requirePostable(state, media.id, page.organizationUrn);
+            }
             const result = await publishAsOrganization(ctx.http, {
               accessToken: page.accessToken,
               organizationId: page.organizationId,
               text: p.text,
               visibility: p.visibility,
+              media,
             });
             await ctx.activity.log({
               companyId: run.companyId,
@@ -89,6 +186,7 @@ const plugin = definePlugin({
               entityId: result.postUrn,
               metadata: {
                 postUrn: result.postUrn,
+                ...(media && { mediaUrn: media.id }),
                 organizationId: page.organizationId,
                 agentId: run.agentId,
                 runId: run.runId,

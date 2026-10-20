@@ -1,4 +1,5 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { ACCEPTED_FILES } from "./adapters/linkedin/media.js";
 
 /**
  * A Paperclip secret reference.
@@ -87,6 +88,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.write",
     "http.outbound",
+    "issue.attachments.read",
     "secrets.read-ref",
     "agent.tools.register",
     "api.routes.register",
@@ -115,11 +117,29 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: { type: "object", properties: {} },
     },
     {
+      name: "linkedin-page-upload",
+      displayName: "Upload a file for a LinkedIn Page post",
+      description:
+        "Upload one Paperclip issue attachment to LinkedIn for a later post as the company Page. " +
+        `The file must be ${ACCEPTED_FILES}, of 10 MiB or less. Nothing is published. ` +
+        "Returns the mediaUrn and its processing status. Pass the mediaUrn to linkedin-page-post " +
+        "with the same organizationId.",
+      parametersSchema: {
+        type: "object",
+        required: ["attachmentId"],
+        properties: {
+          attachmentId: { type: "string", description: "Id of an attachment on a Paperclip issue of this company." },
+          organizationId: organizationIdParam,
+        },
+      },
+    },
+    {
       name: "linkedin-page-post",
       displayName: "Post as LinkedIn Page",
       description:
-        "Publish a post authored by the company LinkedIn Page. The post goes live immediately " +
-        "and publicly — do not call this to draft or preview.",
+        "Publish a post authored by the company LinkedIn Page, with text and optionally one image or " +
+        "document from linkedin-page-upload. The post goes live immediately and publicly — do not call " +
+        "this to draft or preview.",
       parametersSchema: {
         type: "object",
         required: ["text"],
@@ -127,6 +147,21 @@ const manifest: PaperclipPluginManifestV1 = {
           text: { type: "string", description: "Post body. Plain text; LinkedIn renders line breaks." },
           organizationId: organizationIdParam,
           visibility: { type: "string", enum: ["PUBLIC", "LOGGED_IN"], default: "PUBLIC" },
+          mediaUrn: {
+            type: "string",
+            description:
+              "Optional. The urn:li:image:… or urn:li:document:… that linkedin-page-upload returned for the " +
+              "same Page. If LinkedIn is still processing the file, the call fails and publishes nothing; " +
+              "call again later.",
+          },
+          title: {
+            type: "string",
+            description: "Title of the document. Required with a urn:li:document mediaUrn.",
+          },
+          altText: {
+            type: "string",
+            description: "Optional alternative text that describes the image. Maximum 4,086 characters.",
+          },
         },
       },
     },

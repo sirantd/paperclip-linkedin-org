@@ -33,7 +33,11 @@ The scopes that connect asks LinkedIn for.
 The scopes that LinkedIn gives a token. LinkedIn can grant fewer scopes than connect requested. Each Page connection stores its granted scopes.
 
 **Needed scopes**:
-The scopes that one step (connect, post, react or comment) needs. Connect refuses a grant without the needed scopes of every step. An action refuses a Page connection without its needed scopes.
+The scopes that one step (connect, post, react, comment or upload) needs. Connect refuses a grant without the needed scopes of every step. An action refuses a Page connection without its needed scopes.
+
+**Media URN**:
+The LinkedIn identifier of a file that the plugin uploaded for a Page: `urn:li:image:…` or `urn:li:document:…`. A post can show the file only when LinkedIn has finished processing it.
+_Avoid_: asset, media id
 
 ### Paperclip
 

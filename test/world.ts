@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { vi } from "vitest";
 import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { PluginApiRequestInput, PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
@@ -16,6 +17,9 @@ export const ORGS_URL = "https://api.linkedin.com/rest/organizations";
 export const POSTS_URL = "https://api.linkedin.com/rest/posts";
 export const REACTIONS_URL = "https://api.linkedin.com/rest/reactions";
 export const COMMENTS_URL = "https://api.linkedin.com/rest/socialActions";
+export const IMAGES_URL = "https://api.linkedin.com/rest/images";
+export const DOCUMENTS_URL = "https://api.linkedin.com/rest/documents";
+export const UPLOAD_URL = "https://www.linkedin.com/dms-uploads/";
 
 /** LinkedIn tokens live 60 days; one minute falls inside the refresh skew. */
 export const SIXTY_DAYS_S = 60 * 24 * 60 * 60;
@@ -33,7 +37,10 @@ export interface RecordedRequest {
   method: string;
   url: URL;
   headers: Record<string, string>;
+  /** The body text, or "" for a body that is not a string. */
   body: string;
+  /** The body bytes, or null for a body that is a string or absent. */
+  bytes: Uint8Array | null;
 }
 
 type Responder = (req: RecordedRequest) => Response | Promise<Response>;
@@ -84,6 +91,7 @@ export class FakeLinkedIn {
       url: new URL(url),
       headers: { ...(init.headers as Record<string, string> | undefined) },
       body: typeof init.body === "string" ? init.body : "",
+      bytes: init.body instanceof Uint8Array ? new Uint8Array(init.body) : null,
     };
     this.requests.push(req);
     const route = this.routes.find((r) => r.method === req.method && url.startsWith(r.prefix));
@@ -132,6 +140,61 @@ export class FakeLinkedIn {
     this.on("POST", REACTIONS_URL, () => new Response(null, { status: 201 }));
     this.on("POST", COMMENTS_URL, () => json({}, 201));
   }
+
+  /**
+   * Answer the upload flow of both media APIs and the status read. Each
+   * upload start returns the URN `urn:li:{kind}:1`; each status read reports
+   * `status` and `owner`.
+   */
+  scriptMedia(status = "AVAILABLE", owner = `urn:li:organization:${ACME.id}`): void {
+    for (const [kind, url] of [["image", IMAGES_URL], ["document", DOCUMENTS_URL]] as const) {
+      this.on("POST", `${url}?action=initializeUpload`, () =>
+        json({
+          value: {
+            uploadUrlExpiresAt: 1650567510704,
+            uploadUrl: `${UPLOAD_URL}${kind}-1`,
+            [kind]: `urn:li:${kind}:1`,
+          },
+        }),
+      );
+      this.on("GET", `${url}/`, () => json({ owner, id: `urn:li:${kind}:1`, status }));
+    }
+    this.on("PUT", UPLOAD_URL, () => new Response(null, { status: 201 }));
+  }
+}
+
+/**
+ * Put an attachment with `bytes` on a new issue of `companyId`, as the host
+ * stores it, and return the attachment.
+ */
+export function seedAttachment(
+  world: World,
+  file: { contentType: string; bytes: Uint8Array; originalFilename?: string | null; byteSize?: number },
+  companyId = world.companyId,
+) {
+  const now = new Date();
+  const attachment = {
+    id: randomUUID(),
+    companyId,
+    issueId: randomUUID(),
+    issueCommentId: null,
+    assetId: randomUUID(),
+    provider: "local",
+    objectKey: "objects/1",
+    contentType: file.contentType,
+    byteSize: file.byteSize ?? file.bytes.byteLength,
+    sha256: createHash("sha256").update(file.bytes).digest("hex"),
+    originalFilename: file.originalFilename === undefined ? "file.bin" : file.originalFilename,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: now,
+    updatedAt: now,
+    contentPath: "/content",
+  };
+  world.harness.seed({
+    issueAttachments: [{ ...attachment, contentBase64: Buffer.from(file.bytes).toString("base64") }],
+  });
+  return attachment;
 }
 
 export function pluginConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -158,6 +221,8 @@ export interface World {
   sql<T = Record<string, unknown>>(statement: string, params?: unknown[]): Promise<T[]>;
   /** Add a company row so page_connections can reference it. */
   addCompany(): Promise<string>;
+  /** Free the PGLite clone. Each clone holds hundreds of MB until it is closed. */
+  close(): Promise<void>;
 }
 
 let template: Promise<PGlite> | undefined;
@@ -203,7 +268,11 @@ export async function createWorld(): Promise<World> {
         return { rowCount: result.affectedRows ?? 0 };
       },
     },
-    http: { fetch: linkedin.fetch },
+    // As the SDK client does, send a body that is not a string as String(body).
+    http: {
+      fetch: (url: string, init: RequestInit = {}) =>
+        linkedin.fetch(url, init.body == null || typeof init.body === "string" ? init : { ...init, body: String(init.body) }),
+    },
     secrets: {
       async resolve(ref: { secretId: string }) {
         const value = secrets[ref.secretId];
@@ -221,7 +290,13 @@ export async function createWorld(): Promise<World> {
   const companyId = await addCompany();
   configs.set(companyId, pluginConfig());
 
-  return { harness, ctx: harness.ctx, linkedin, companyId, configs, secrets, dek, sql, addCompany };
+  // File uploads use the Node fetch, not ctx.http. The stub comes after the
+  // PGLite load; vitest.config.ts restores the real fetch after each test.
+  vi.stubGlobal("fetch", linkedin.fetch);
+
+  const close = () => pg.close();
+
+  return { harness, ctx: harness.ctx, linkedin, companyId, configs, secrets, dek, sql, addCompany, close };
 }
 
 /**

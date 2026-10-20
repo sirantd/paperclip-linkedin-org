@@ -32,13 +32,14 @@ describe("grantedScopes", () => {
 
 describe("missingScopes", () => {
   it("finds nothing missing in a full grant", () => {
-    for (const action of ["post", "react", "comment"] as const) {
+    for (const action of ["post", "react", "comment", "upload"] as const) {
       expect(missingScopes(REQUESTED_SCOPES, action)).toEqual([]);
     }
   });
 
-  it("lets a grant without the feed scopes post but not react or comment", () => {
+  it("lets a grant without the feed scopes post and upload but not react or comment", () => {
     expect(missingScopes(BEFORE_FEED_SCOPES, "post")).toEqual([]);
+    expect(missingScopes(BEFORE_FEED_SCOPES, "upload")).toEqual([]);
     expect(missingScopes(BEFORE_FEED_SCOPES, "react")).toEqual(["w_organization_social_feed"]);
     expect(missingScopes(BEFORE_FEED_SCOPES, "comment")).toEqual(["w_organization_social_feed"]);
   });

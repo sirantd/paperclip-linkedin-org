@@ -24,7 +24,7 @@ scope that the action needs, and tells the operator to reconnect the Page.
 | Scope | Needed for |
 |---|---|
 | `r_organization_social` | none |
-| `w_organization_social` | post, react, comment |
+| `w_organization_social` | post, react, comment, upload |
 | `r_organization_social_feed` | none |
 | `w_organization_social_feed` | react, comment |
 | `rw_organization_admin` | connect |
@@ -60,13 +60,45 @@ openssl rand -base64 32
 | Tool | Purpose |
 |---|---|
 | `linkedin-page-list` | List connected Pages. |
-| `linkedin-page-post` | Publish a post authored by the Page. |
+| `linkedin-page-upload` | Upload an issue attachment for a later post by the Page. |
+| `linkedin-page-post` | Publish a post authored by the Page, with an optional uploaded image or document. |
 | `linkedin-page-react` | React to a post as the Page. |
 | `linkedin-page-comment` | Comment on a post as the Page. |
 
 If a tool call omits `organizationId`, the tool acts as the default Page, else
 the only active Page. If several Pages are active and no default Page is set,
 the call fails. A post to the wrong company Page is not a recoverable mistake.
+
+### Images and documents
+
+A post with a file takes three steps:
+
+1. Attach the file to a Paperclip issue of the company.
+2. Call `linkedin-page-upload` with the `attachmentId`. The tool returns a
+   media URN (`urn:li:image:…` or `urn:li:document:…`) and its processing
+   status.
+3. Call `linkedin-page-post` with `mediaUrn` and the same `organizationId`. A
+   document also needs `title`; an image takes an optional `altText`.
+
+The post refuses a file that LinkedIn has not finished processing and publishes
+nothing. Call it again later. It also refuses a file that LinkedIn could not
+process and a file that another Page uploaded.
+
+| Content type | LinkedIn API |
+|---|---|
+| `image/png`, `image/jpeg`, `image/jpg`, `image/gif` | Images API |
+| `application/pdf`, `application/msword`, DOCX, `application/vnd.ms-powerpoint`, PPTX | Documents API |
+
+The plugin uploads a file of 10 MiB or less. This is the default Paperclip
+attachment limit; the worker holds the file in memory, and the host gives a tool
+call 30 s.
+
+The upload reads attachments with the `issue.attachments.read` capability. It
+cannot read an attachment on a private issue that the plugin cannot see. An
+upgrade from a version without this capability stops at `upgrade_pending` until
+the operator approves the new capability set. The
+file upload uses the Node `fetch`, because `ctx.http` cannot send bytes, so
+the host tracing and audit log do not include that one request.
 
 ## Database
 
@@ -98,5 +130,6 @@ Live-tested 2026-09-29 against two connected Pages (PER-2499):
   before this change refuses react and comment with a message that names the
   missing scope. Reconnect it via `oauth-start`.
 - **Unverified:** the `/rest/organizations?ids=List(...)` batch projection.
+- **Unverified:** image and document posts. Issue #14 lists the live tests.
 
 There is no settings UI yet; configure via the plugin config API.

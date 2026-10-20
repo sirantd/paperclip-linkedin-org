@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPageConnections, type PageConnections } from "../src/page-connections.js";
 import { openToken } from "../src/crypto.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
@@ -27,6 +27,8 @@ beforeEach(async () => {
   world = await createWorld();
   pages = createPageConnections(world.ctx);
 });
+
+afterEach(() => world.close());
 
 async function startConnect(): Promise<string> {
   const { authorizationUrl } = await pages.startConnect(world.companyId, "operator-1");
