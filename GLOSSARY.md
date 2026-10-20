@@ -46,7 +46,7 @@ _Avoid_: asset, media id
 ### Paperclip
 
 **Company**:
-The Paperclip company that owns a set of Page connections and its own plugin settings. It is not the LinkedIn organization.
+The Paperclip company that owns a set of Page connections and its own plugin config. It is not the LinkedIn organization.
 _Avoid_: tenant, workspace, organization
 
 **Operator**:
@@ -58,10 +58,10 @@ The stored authorization that lets one company act as one Page.
 _Avoid_: connected Page, integration, link, account
 
 **Page connection status**:
-The state of a Page connection. `active` means agents can use it. `expired` means the authorization cannot be renewed and the operator must reconnect. `revoked` means an operator disconnected it.
+The state of a Page connection. `active` means agents can use it. `expired` means the authorization cannot be renewed and an operator must connect the Page again. `revoked` means an operator disconnected it.
 
 **Default Page**:
-The Page that an agent acts as when a tool call names no Page. Each company can set one default Page in its plugin settings.
+The Page that an agent acts as when a tool call names no Page. Each company can set one default Page in its plugin config (`defaultOrganization`).
 
 **Acting Page**:
 The Page that one tool call acts as. It is the named Page, else the default Page, else the only active Page. With several active Pages and no choice, there is no acting Page.
