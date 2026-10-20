@@ -23,6 +23,19 @@ function secretRef(title: string, description: string): JsonSchema {
   };
 }
 
+/**
+ * The acting Page of a tool call. The text states the rule of
+ * `PageConnections.actAs`: the named Page, else the default Page, else the
+ * only active Page.
+ */
+const organizationIdParam: JsonSchema = {
+  type: "string",
+  description:
+    "Numeric organization id of the Page to act as, from linkedin-page-list. If you omit it, " +
+    "the tool uses the default Page, else the only active Page. If several Pages are active " +
+    "and no default Page is set, the call fails.",
+};
+
 const instanceConfigSchema: JsonSchema = {
   type: "object",
   required: ["dekRef", "redirectBaseUrl", "clientIdRef", "clientSecretRef"],
@@ -106,17 +119,13 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Post as LinkedIn Page",
       description:
         "Publish a post authored by the company LinkedIn Page. The post goes live immediately " +
-        "and publicly — do not call this to draft or preview. organizationId is optional when " +
-        "exactly one Page is connected.",
+        "and publicly — do not call this to draft or preview.",
       parametersSchema: {
         type: "object",
         required: ["text"],
         properties: {
           text: { type: "string", description: "Post body. Plain text; LinkedIn renders line breaks." },
-          organizationId: {
-            type: "string",
-            description: "Numeric organization id. Optional when exactly one Page is connected.",
-          },
+          organizationId: organizationIdParam,
           visibility: { type: "string", enum: ["PUBLIC", "LOGGED_IN"], default: "PUBLIC" },
         },
       },
@@ -133,7 +142,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description: "urn:li:activity:… / urn:li:share:… / urn:li:ugcPost:…",
           },
-          organizationId: { type: "string" },
+          organizationId: organizationIdParam,
           reactionType: {
             type: "string",
             enum: ["LIKE", "PRAISE", "EMPATHY", "INTEREST", "APPRECIATION"],
@@ -152,7 +161,7 @@ const manifest: PaperclipPluginManifestV1 = {
         properties: {
           postUrn: { type: "string" },
           text: { type: "string" },
-          organizationId: { type: "string" },
+          organizationId: organizationIdParam,
         },
       },
     },

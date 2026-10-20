@@ -49,9 +49,9 @@ openssl rand -base64 32
 | `linkedin-page-react` | React to a post as the Page. |
 | `linkedin-page-comment` | Comment on a post as the Page. |
 
-`organizationId` is optional when exactly one Page is connected. With several
-connected and no default set, calls fail rather than guess — posting to the
-wrong company Page is not a recoverable mistake.
+If a tool call omits `organizationId`, the tool acts as the default Page, else
+the only active Page. If several Pages are active and no default Page is set,
+the call fails. A post to the wrong company Page is not a recoverable mistake.
 
 ## Database
 
