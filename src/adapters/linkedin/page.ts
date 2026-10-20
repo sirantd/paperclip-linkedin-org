@@ -33,6 +33,17 @@ export interface PublishResult {
   permalink: string | null;
 }
 
+export interface ReactResult {
+  /** The URN of the created reaction, or null when LinkedIn returned none (a reaction that exists already). */
+  reactionUrn: string | null;
+  reactionType: ReactionType;
+}
+
+export interface CommentResult {
+  /** The URN of the created comment, or null when LinkedIn returned none. */
+  commentUrn: string | null;
+}
+
 /**
  * The LinkedIn calls of one Page. Each call acts as the Page with one access
  * token. A call that LinkedIn answers with an error status throws a
@@ -44,10 +55,13 @@ export interface PageCalls {
    * the Page owns and that LinkedIn has finished processing.
    */
   post(input: PostInput): Promise<PublishResult>;
-  /** React to any post as the Page. A reaction that exists already counts as done. */
-  react(postUrn: string, reactionType?: ReactionType): Promise<void>;
+  /**
+   * React to any post as the Page, with LIKE when no type is given. A reaction
+   * that exists already counts as done.
+   */
+  react(postUrn: string, reactionType?: ReactionType): Promise<ReactResult>;
   /** Comment on any post as the Page. */
-  comment(postUrn: string, text: string): Promise<void>;
+  comment(postUrn: string, text: string): Promise<CommentResult>;
   /**
    * Upload a file that the Page owns: a JPG, GIF or PNG image, or a PDF, DOC,
    * DOCX, PPT or PPTX document. LinkedIn processes it after the upload.
@@ -62,10 +76,7 @@ export interface PageCalls {
  */
 export type FileTransport = (url: string, init: RequestInit) => Promise<Response>;
 
-/**
- * The Node fetch. The file PUT skips the host tracing and audit log. The
- * lookup of fetch is at call time, so the worker tests can replace it.
- */
+/** The Node fetch. The file PUT skips the host tracing and audit log. */
 const nodeFetch: FileTransport = (url, init) => fetch(url, init);
 
 const URL_BY_KIND: Readonly<Record<MediaKind, string>> = {
@@ -157,25 +168,29 @@ export function linkedInPage(
       return { postUrn, permalink: permalinkFor(postUrn) };
     },
 
-    async react(postUrn, reactionType) {
+    async react(postUrn, reactionType = "LIKE") {
       // 409/422 means the reaction already exists — that is the desired end state.
-      await rest(
+      const res = await rest(
         "LinkedIn react",
         {
           method: "POST",
           url: `${LINKEDIN_REACTIONS_URL}?actor=${encodeURIComponent(organizationUrn)}`,
-          body: { root: postUrn, reactionType: reactionType ?? "LIKE" },
+          body: { root: postUrn, reactionType },
         },
         [409, 422],
       );
+      // The created reaction comes back in the body: `urn:li:reaction:(actor,root)`.
+      return { reactionUrn: res.ok ? await urnField(res, "id") : null, reactionType };
     },
 
     async comment(postUrn, text) {
-      await rest("LinkedIn comment", {
+      const res = await rest("LinkedIn comment", {
         method: "POST",
         url: `${LINKEDIN_COMMENTS_URL}/${encodeURIComponent(postUrn)}/comments`,
         body: { actor: organizationUrn, object: postUrn, message: { text } },
       });
+      // The x-restli-id header holds only the comment id; the body holds the comment URN.
+      return { commentUrn: await urnField(res, "commentUrn") };
     },
 
     async upload({ contentType, bytes }) {
@@ -205,6 +220,21 @@ export function linkedInPage(
       return { mediaUrn, status, kind };
     },
   };
+}
+
+/**
+ * The URN in the field `field` of a JSON response body, or null. A body that
+ * is empty or not JSON, or a field that is not a URN, gives null.
+ */
+async function urnField(res: Response, field: string): Promise<string | null> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await res.text());
+  } catch {
+    return null;
+  }
+  const value = (body as Record<string, unknown> | null)?.[field];
+  return typeof value === "string" && value.startsWith("urn:li:") ? value : null;
 }
 
 function permalinkFor(postUrn: string): string | null {

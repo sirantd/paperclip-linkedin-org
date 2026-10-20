@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
-import plugin from "../src/worker.js";
+import { createPlugin } from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
@@ -32,9 +32,12 @@ const PDF = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]);
 // included, in linkedin-page.test.ts.
 
 let world: World;
+let plugin: ReturnType<typeof createPlugin>;
 
 beforeEach(async () => {
   world = await createWorld();
+  // The file bytes of an upload go to the LinkedIn fake.
+  plugin = createPlugin(world.linkedin.fetch);
   await plugin.definition.setup(world.ctx);
 });
 
@@ -48,8 +51,10 @@ function route(
   return plugin.definition.onApiRequest!(routeInput(routeKey, companyId, input));
 }
 
+const RUN_ID = "run-1";
+
 function tool(name: string, params: Record<string, unknown> = {}, companyId = world.companyId) {
-  return world.harness.executeTool(name, params, { companyId });
+  return world.harness.executeTool(name, params, { companyId, runId: RUN_ID });
 }
 
 async function startConnect(): Promise<string> {
@@ -136,8 +141,135 @@ describe("agent tools", () => {
   });
 });
 
+describe("activity entries", () => {
+  /** The metadata that the tool shell adds to each entry. */
+  const COMMON = { organizationId: "111", agentId: "agent-test", runId: RUN_ID };
+
+  /** One tool call: the LinkedIn answers it needs, its parameters and the activity entry it must write. */
+  type Case = () => { params: Record<string, unknown>; entry: Record<string, unknown> };
+
+  it.each<[string, string, Case]>([
+    ["linkedin-page-post", "a post", () => {
+      world.linkedin.scriptActions("urn:li:share:9");
+      return {
+        params: { text: "Hello" },
+        entry: {
+          message: "Posted as Acme",
+          entityType: "linkedin_page_post",
+          entityId: "urn:li:share:9",
+          metadata: { postUrn: "urn:li:share:9", ...COMMON },
+        },
+      };
+    }],
+    ["linkedin-page-post", "a post with an image", () => {
+      world.linkedin.scriptMedia();
+      world.linkedin.scriptActions("urn:li:share:9");
+      return {
+        params: { text: "Q3", mediaUrn: "urn:li:image:1" },
+        entry: {
+          message: "Posted as Acme",
+          entityType: "linkedin_page_post",
+          entityId: "urn:li:share:9",
+          metadata: { postUrn: "urn:li:share:9", mediaUrn: "urn:li:image:1", ...COMMON },
+        },
+      };
+    }],
+    ["linkedin-page-upload", "an upload", () => {
+      world.linkedin.scriptMedia();
+      const file = seedAttachment(world, { contentType: "image/png", bytes: PNG, originalFilename: "chart.png" });
+      return {
+        params: { attachmentId: file.id },
+        entry: {
+          message: "Uploaded chart.png for Acme",
+          entityType: "linkedin_page_media",
+          entityId: "urn:li:image:1",
+          metadata: {
+            mediaUrn: "urn:li:image:1",
+            attachmentId: file.id,
+            sha256: file.sha256,
+            contentType: "image/png",
+            byteSize: PNG.byteLength,
+            ...COMMON,
+          },
+        },
+      };
+    }],
+    ["linkedin-page-react", "a reaction", () => {
+      world.linkedin.scriptActions();
+      return {
+        params: { postUrn: "urn:li:share:1", reactionType: "PRAISE" },
+        entry: {
+          message: "Reacted to urn:li:share:1 as Acme",
+          entityType: "linkedin_page_reaction",
+          entityId: "urn:li:reaction:(urn:li:organization:111,urn:li:share:1)",
+          metadata: {
+            postUrn: "urn:li:share:1",
+            reactionType: "PRAISE",
+            reactionUrn: "urn:li:reaction:(urn:li:organization:111,urn:li:share:1)",
+            ...COMMON,
+          },
+        },
+      };
+    }],
+    ["linkedin-page-react", "a reaction that exists already", () => {
+      world.linkedin.on("POST", REACTIONS_URL, () => json({ code: "DUPLICATE_REACTION" }, 409));
+      return {
+        params: { postUrn: "urn:li:share:1" },
+        entry: {
+          message: "Reacted to urn:li:share:1 as Acme",
+          entityType: "linkedin_page_reaction",
+          entityId: "urn:li:share:1",
+          metadata: { postUrn: "urn:li:share:1", reactionType: "LIKE", ...COMMON },
+        },
+      };
+    }],
+    ["linkedin-page-comment", "a comment", () => {
+      world.linkedin.scriptActions();
+      return {
+        params: { postUrn: "urn:li:share:1", text: "Nice" },
+        entry: {
+          message: "Commented on urn:li:share:1 as Acme",
+          entityType: "linkedin_page_comment",
+          entityId: "urn:li:comment:(urn:li:share:1,1)",
+          metadata: { postUrn: "urn:li:share:1", commentUrn: "urn:li:comment:(urn:li:share:1,1)", ...COMMON },
+        },
+      };
+    }],
+  ])("%s writes one activity entry for %s", async (name, _label, prepare) => {
+    await connect([ACME]);
+    const { params, entry } = prepare();
+
+    expect(await tool(name, params)).not.toHaveProperty("error");
+    expect(world.harness.activity).toEqual([{ companyId: world.companyId, ...entry }]);
+  });
+
+  it("returns the result of a done post when the activity entry fails, and logs the failure", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptActions("urn:li:share:9");
+    vi.spyOn(world.ctx.activity, "log").mockRejectedValueOnce(new Error("activity log is down"));
+
+    expect(await tool("linkedin-page-post", { text: "Hello" })).toEqual({
+      content: "Published as Acme: https://www.linkedin.com/feed/update/urn:li:share:9/",
+      data: { postUrn: "urn:li:share:9", permalink: "https://www.linkedin.com/feed/update/urn:li:share:9/" },
+    });
+    expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(1);
+    expect(world.harness.logs).toContainEqual({
+      level: "error",
+      message: "Could not write the activity entry of a done action",
+      meta: {
+        tool: "linkedin-page-post",
+        companyId: world.companyId,
+        entityType: "linkedin_page_post",
+        entityId: "urn:li:share:9",
+        metadata: { postUrn: "urn:li:share:9", ...COMMON },
+        error: "activity log is down",
+      },
+    });
+  });
+});
+
 describe("linkedin-page-post", () => {
-  it("posts as the acting Page and logs the activity", async () => {
+  it("posts as the acting Page", async () => {
     await connect([ACME]);
     world.linkedin.scriptActions("urn:li:share:9");
 
@@ -154,14 +286,6 @@ describe("linkedin-page-post", () => {
       commentary: "Hello",
       visibility: "PUBLIC",
     });
-    expect(world.harness.activity).toEqual([
-      expect.objectContaining({
-        message: "Posted as Acme",
-        entityType: "linkedin_page_post",
-        entityId: "urn:li:share:9",
-        metadata: expect.objectContaining({ postUrn: "urn:li:share:9", organizationId: "111", agentId: "agent-test" }),
-      }),
-    ]);
   });
 
   it("returns a failure as a tool error", async () => {
@@ -212,9 +336,6 @@ describe("linkedin-page-post", () => {
       commentary: "Q3",
       content: { media: { id: "urn:li:image:1", altText: "A chart" } },
     });
-    expect(world.harness.activity).toEqual([
-      expect.objectContaining({ metadata: expect.objectContaining({ mediaUrn: "urn:li:image:1" }) }),
-    ]);
   });
 
   it("posts an uploaded document with its title", async () => {
@@ -241,7 +362,7 @@ describe("linkedin-page-post", () => {
 });
 
 describe("linkedin-page-upload", () => {
-  it("uploads an image as the acting Page and logs the activity", async () => {
+  it("uploads an image as the acting Page", async () => {
     await connect([ACME]);
     world.linkedin.scriptMedia("PROCESSING");
     const file = seedAttachment(world, { contentType: "image/png", bytes: PNG, originalFilename: "chart.png" });
@@ -255,19 +376,6 @@ describe("linkedin-page-upload", () => {
     const [put] = world.linkedin.requestsTo(UPLOAD_URL);
     expect(put!.headers).toMatchObject({ Authorization: "Bearer access-1", "Content-Type": "image/png" });
     expect(put!.bytes).toEqual(PNG);
-    expect(world.harness.activity).toEqual([
-      expect.objectContaining({
-        message: "Uploaded chart.png for Acme",
-        entityType: "linkedin_page_media",
-        entityId: "urn:li:image:1",
-        metadata: expect.objectContaining({
-          mediaUrn: "urn:li:image:1",
-          attachmentId: file.id,
-          sha256: file.sha256,
-          organizationId: "111",
-        }),
-      }),
-    ]);
   });
 
   it("tells the agent that a post with an uploaded document needs a title", async () => {

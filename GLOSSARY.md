@@ -74,6 +74,10 @@ _Avoid_: install, link, onboard
 The operator action that revokes a Page connection.
 _Avoid_: unlink, remove
 
+**Activity entry**:
+The record that the plugin writes to the company activity log for each action as a Page: upload, post, react and comment. The tool writes it after LinkedIn did the action. A failed write goes to the plugin log and does not change the tool result.
+_Avoid_: audit entry, log entry
+
 **OAuth state**:
 The random value that connect sends to LinkedIn and that LinkedIn returns in the redirect. It belongs to the operator who started connect. It is valid for one finish within 10 minutes. The first finish uses it up, whatever the outcome.
 _Avoid_: nonce, token
