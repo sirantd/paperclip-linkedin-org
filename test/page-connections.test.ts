@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createPageConnections, type PageConnections } from "../src/page-connections.js";
 import { openToken } from "../src/crypto.js";
 import { LINKEDIN_ORG_SCOPES } from "../src/adapters/linkedin/constants.js";
+import { LinkedInApiError } from "../src/adapters/linkedin/errors.js";
 import {
   ACME,
   GLOBEX,
@@ -36,8 +37,9 @@ async function connect(fakePages: FakePage[], tokens: Record<string, unknown> = 
   return pages.finishConnect(world.companyId, "code-1", await startConnect(), "operator-1");
 }
 
+/** The acting Page that actAs hands to its work. */
 function actAs(organizationId?: string) {
-  return pages.actAs(world.companyId, organizationId);
+  return pages.actAs(world.companyId, organizationId, async (page) => page);
 }
 
 async function statusOf(organizationId: string) {
@@ -162,6 +164,34 @@ describe("actAs", () => {
           "Reconnect the Page in Settings.",
       );
       expect(await statusOf("111")).toBe("expired");
+    });
+  });
+
+  describe("the work", () => {
+    it("returns the result of the work", async () => {
+      await connect([ACME]);
+      expect(await pages.actAs(world.companyId, undefined, async (page) => `posted as ${page.displayName}`)).toBe(
+        "posted as Acme",
+      );
+    });
+
+    it("expires the Page connection when LinkedIn rejects the token", async () => {
+      await connect([ACME]);
+      const rejected = new LinkedInApiError(401, 'LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}');
+
+      await expect(pages.actAs(world.companyId, undefined, () => Promise.reject(rejected))).rejects.toThrow(
+        'LinkedIn rejected the token for Page 111 (LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
+          "Reconnect the Page in Settings.",
+      );
+      expect(await statusOf("111")).toBe("expired");
+    });
+
+    it("passes other errors through and keeps the Page connection active", async () => {
+      await connect([ACME]);
+      const denied = new LinkedInApiError(403, "LinkedIn react 403: ACCESS_DENIED");
+
+      await expect(pages.actAs(world.companyId, undefined, () => Promise.reject(denied))).rejects.toBe(denied);
+      expect(await statusOf("111")).toBe("active");
     });
   });
 });
@@ -317,6 +347,8 @@ describe("disconnect", () => {
 describe("configuration", () => {
   it("fails for a company with no plugin config", async () => {
     const other = await world.addCompany();
-    await expect(pages.actAs(other)).rejects.toThrow("LinkedIn Page plugin is not configured for this company");
+    await expect(pages.actAs(other, undefined, async (page) => page)).rejects.toThrow(
+      "LinkedIn Page plugin is not configured for this company",
+    );
   });
 });
