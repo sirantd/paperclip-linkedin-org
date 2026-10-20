@@ -17,7 +17,7 @@
   "devDependencies": {
     "@paperclipai/plugin-sdk": "^2026.720.0",
     "@types/node": "^24.6.0",
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.3",
     "vitest": "^5.0.0"
   },
