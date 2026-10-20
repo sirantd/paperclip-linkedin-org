@@ -136,13 +136,24 @@ interface PluginConfigShape {
   defaultOrganizationUrn?: string;
 }
 
-interface Credentials {
-  dek: string;
+/** The secret fields of PluginConfigShape. */
+type SecretPath = "dekRef" | "clientIdRef" | "clientSecretRef";
+
+interface ClientCredentials {
   clientId: string;
   clientSecret: string;
+}
+
+interface Credentials {
+  dek: string;
   redirectUri: string;
   /** The organization reference of the default Page, as the operator set it. */
   defaultOrganizationRef: string | null;
+  /**
+   * Resolve the Client ID and the Client Secret. Only connect and a token
+   * refresh need them, so a token that is still valid needs only the DEK.
+   */
+  client(): Promise<ClientCredentials>;
 }
 
 /**
@@ -258,12 +269,14 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
       const creds = await loadCredentials(ctx, companyId);
       // A bad DEK must not reach LinkedIn: the finish could not store the tokens.
       requireSealingKey(creds.dek);
+      // The finish needs the Client Secret too. A missing secret must fail before the member approves.
+      const { clientId } = await creds.client();
       const state = crypto.randomUUID();
       const pending: PendingConnect = { createdAt: Date.now(), actorId: operatorId };
       await ctx.state.set(oauthStateKey(companyId, state), pending);
       return {
         authorizationUrl: buildAuthorizationUrl({
-          clientId: creds.clientId,
+          clientId,
           redirectUri: creds.redirectUri,
           state,
         }),
@@ -295,20 +308,17 @@ async function loadCredentials(ctx: PluginContext, companyId: string): Promise<C
   if (!config) {
     throw new Error("LinkedIn Page plugin is not configured for this company");
   }
-  const [dek, clientId, clientSecret] = (
-    await Promise.all([
-      ctx.secrets.resolve(config.dekRef, { companyId, configPath: "dekRef" }),
-      ctx.secrets.resolve(config.clientIdRef, { companyId, configPath: "clientIdRef" }),
-      ctx.secrets.resolve(config.clientSecretRef, { companyId, configPath: "clientSecretRef" }),
-    ])
-  ).map((v) => v.trim()) as [string, string, string];
-  // Trimmed because secrets pasted through a UI or written by `echo` routinely
-  // carry a trailing newline, and LinkedIn answers that with a bare
-  // invalid_client that looks identical to a wrong secret.
+  const resolve = async (configPath: SecretPath): Promise<string> =>
+    // Trimmed because secrets pasted through a UI or written by `echo` routinely
+    // carry a trailing newline, and LinkedIn answers that with a bare
+    // invalid_client that looks identical to a wrong secret.
+    (await ctx.secrets.resolve(config[configPath], { companyId, configPath })).trim();
   return {
-    dek,
-    clientId,
-    clientSecret,
+    dek: await resolve("dekRef"),
+    async client() {
+      const [clientId, clientSecret] = await Promise.all([resolve("clientIdRef"), resolve("clientSecretRef")]);
+      return { clientId, clientSecret };
+    },
     // Must match the URI registered in the LinkedIn app byte for byte, including
     // the companyId query param — LinkedIn compares before appending code/state.
     redirectUri:
@@ -483,12 +493,14 @@ async function refreshAccessToken(
     );
   }
 
+  // Outside the try: a secret that cannot be resolved keeps its own text.
+  const { clientId, clientSecret } = await creds.client();
   let refreshed: LinkedInTokens;
   try {
     refreshed = await refreshTokens(ctx.http, {
       refreshToken: openToken(row.refresh_token_sealed, creds.dek),
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
+      clientId,
+      clientSecret,
     });
   } catch (err) {
     // Only invalid_grant means the refresh token is dead. A network error or a
@@ -569,10 +581,12 @@ async function completeOAuth(
   }
 
   let creds: Credentials;
+  let client: ClientCredentials;
   try {
     creds = await loadCredentials(ctx, companyId);
     // The DEK can change after start. Examine it again before LinkedIn spends the code.
     requireSealingKey(creds.dek);
+    client = await creds.client();
   } catch (err) {
     return { kind: "plugin_failed", reason: (err as Error).message };
   }
@@ -581,8 +595,7 @@ async function completeOAuth(
   try {
     tokens = await exchangeCode(ctx.http, {
       code,
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
+      ...client,
       redirectUri: creds.redirectUri,
     });
   } catch (err) {

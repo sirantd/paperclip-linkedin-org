@@ -285,6 +285,30 @@ describe("actAs", () => {
       await expect(actAs()).rejects.toThrow("confirm it matches the app's current Primary Client Secret");
     });
 
+    it("resolves only the DEK while the token is valid", async () => {
+      await connect([ACME]);
+      const resolve = vi.spyOn(world.ctx.secrets, "resolve");
+
+      await react();
+
+      expect(resolve.mock.calls.map(([, options]) => options?.configPath)).toEqual(["dekRef"]);
+    });
+
+    it("resolves the Client ID and the Client Secret once for a refresh that concurrent calls share", async () => {
+      await connect([ACME], { expires_in: ONE_MINUTE_S });
+      world.linkedin.scriptRefresh(() => tokenResponse({ access_token: "access-2" }));
+      const resolve = vi.spyOn(world.ctx.secrets, "resolve");
+
+      await Promise.all([react(), react()]);
+
+      expect(resolve.mock.calls.map(([, options]) => options?.configPath).sort()).toEqual([
+        "clientIdRef",
+        "clientSecretRef",
+        "dekRef",
+        "dekRef",
+      ]);
+    });
+
     it("tries the refresh again on the next call after a failed refresh", async () => {
       await connect([ACME], { expires_in: ONE_MINUTE_S });
       world.linkedin.scriptRefresh(() => json({}, 503));
