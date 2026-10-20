@@ -10,6 +10,13 @@ import { apiError } from "./errors.js";
 
 export type ReactionType = "LIKE" | "PRAISE" | "EMPATHY" | "INTEREST" | "APPRECIATION";
 
+/** The `content.media` of a post. */
+export interface PostMedia {
+  id: string;
+  title?: string;
+  altText?: string;
+}
+
 export interface PublishResult {
   postUrn: string;
   permalink: string | null;
@@ -28,6 +35,8 @@ export async function publishAsOrganization(
     organizationId: string;
     text: string;
     visibility?: "PUBLIC" | "LOGGED_IN";
+    /** An uploaded image or document. LinkedIn requires `title` for a document. */
+    media?: PostMedia;
   },
 ): Promise<PublishResult> {
   const author = organizationUrn(input.organizationId);
@@ -40,6 +49,7 @@ export async function publishAsOrganization(
       targetEntities: [],
       thirdPartyDistributionChannels: [],
     },
+    ...(input.media && { content: { media: input.media } }),
     lifecycleState: "PUBLISHED",
     isReshareDisabledByAuthor: false,
   };

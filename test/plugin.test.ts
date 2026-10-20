@@ -4,21 +4,29 @@ import plugin from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
+import { MAX_MEDIA_BYTES } from "../src/adapters/linkedin/media.js";
 import {
   ACME,
   COMMENTS_URL,
+  DOCUMENTS_URL,
   GLOBEX,
+  IMAGES_URL,
   ORG_ACLS_URL,
   POSTS_URL,
   REACTIONS_URL,
+  UPLOAD_URL,
   json,
   routeInput,
   wire,
   createWorld,
   revertToGrantBeforeFeedScopes,
+  seedAttachment,
   type FakePage,
   type World,
 } from "./world.js";
+
+const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+const PDF = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]);
 
 // Smoke tests for the agent tools and API routes: wiring, wire shapes and
 // the answers the worker builds. Page connection behavior is covered in
@@ -187,6 +195,191 @@ describe("linkedin-page-post", () => {
         "Update LINKEDIN_VERSION and release the plugin. A reconnect does not help.",
     });
     expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "active" })]);
+  });
+
+  it("posts an uploaded image with its alternative text", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia();
+    world.linkedin.scriptActions("urn:li:share:9");
+
+    const result = await tool("linkedin-page-post", { text: "Q3", mediaUrn: "urn:li:image:1", altText: "A chart" });
+
+    expect(result).toHaveProperty("content", "Published as Acme: https://www.linkedin.com/feed/update/urn:li:share:9/");
+    const [status] = world.linkedin.requestsTo(`${IMAGES_URL}/`);
+    expect(status!.url.pathname).toBe("/rest/images/urn%3Ali%3Aimage%3A1");
+    const [post] = world.linkedin.requestsTo(POSTS_URL);
+    expect(JSON.parse(post!.body)).toMatchObject({
+      commentary: "Q3",
+      content: { media: { id: "urn:li:image:1", altText: "A chart" } },
+    });
+    expect(world.harness.activity).toEqual([
+      expect.objectContaining({ metadata: expect.objectContaining({ mediaUrn: "urn:li:image:1" }) }),
+    ]);
+  });
+
+  it("posts an uploaded document with its title", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia();
+    world.linkedin.scriptActions();
+
+    await tool("linkedin-page-post", { text: "Report", mediaUrn: "urn:li:document:1", title: "Q3 report" });
+
+    expect(world.linkedin.requestsTo(`${DOCUMENTS_URL}/`)).toHaveLength(1);
+    const [post] = world.linkedin.requestsTo(POSTS_URL);
+    expect(JSON.parse(post!.body).content).toEqual({ media: { id: "urn:li:document:1", title: "Q3 report" } });
+  });
+
+  it("refuses a document without a title before any LinkedIn call", async () => {
+    await connect([ACME]);
+    const before = world.linkedin.requests.length;
+
+    expect(await tool("linkedin-page-post", { text: "Report", mediaUrn: "urn:li:document:1" })).toEqual({
+      error: "A post with a document needs a title.",
+    });
+    expect(world.linkedin.requests).toHaveLength(before);
+  });
+
+  it("refuses a URN that is not an image or a document", async () => {
+    await connect([ACME]);
+
+    expect(await tool("linkedin-page-post", { text: "Hi", mediaUrn: "urn:li:share:1" })).toEqual({
+      error: "urn:li:share:1 is not an image or a document. Pass the mediaUrn that linkedin-page-upload returned.",
+    });
+  });
+
+  it("publishes nothing while LinkedIn processes the file", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia("PROCESSING");
+    world.linkedin.scriptActions();
+
+    expect(await tool("linkedin-page-post", { text: "Q3", mediaUrn: "urn:li:image:1" })).toEqual({
+      error: "LinkedIn is still processing urn:li:image:1 (PROCESSING). Call linkedin-page-post again later.",
+    });
+    expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
+  });
+
+  it("refuses a file that LinkedIn could not process", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia("PROCESSING_FAILED");
+    world.linkedin.scriptActions();
+
+    expect(await tool("linkedin-page-post", { text: "Q3", mediaUrn: "urn:li:image:1" })).toEqual({
+      error:
+        "LinkedIn could not process urn:li:image:1. The file can be too large or damaged, or LinkedIn failed. " +
+        "Upload a different file.",
+    });
+    expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
+  });
+
+  it("refuses a file that another Page uploaded", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia("AVAILABLE", "urn:li:organization:222");
+    world.linkedin.scriptActions();
+
+    expect(await tool("linkedin-page-post", { text: "Q3", mediaUrn: "urn:li:image:1" })).toEqual({
+      error:
+        "urn:li:image:1 belongs to urn:li:organization:222, not to urn:li:organization:111. " +
+        "Upload the file again with the organizationId of the post.",
+    });
+    expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
+  });
+});
+
+describe("linkedin-page-upload", () => {
+  it("uploads an image as the acting Page and logs the activity", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia("PROCESSING");
+    const file = seedAttachment(world, { contentType: "image/png", bytes: PNG, originalFilename: "chart.png" });
+
+    const result = await tool("linkedin-page-upload", { attachmentId: file.id });
+
+    expect(result).toEqual({
+      content: "Uploaded chart.png for Acme as urn:li:image:1 (PROCESSING). Pass mediaUrn to linkedin-page-post.",
+      data: { mediaUrn: "urn:li:image:1", status: "PROCESSING", kind: "image", originalFilename: "chart.png" },
+    });
+    const [start] = world.linkedin.requestsTo(`${IMAGES_URL}?action=initializeUpload`);
+    expect(JSON.parse(start!.body)).toEqual({ initializeUploadRequest: { owner: "urn:li:organization:111" } });
+    const [put] = world.linkedin.requestsTo(UPLOAD_URL);
+    expect(put!.method).toBe("PUT");
+    expect(put!.url.toString()).toBe(`${UPLOAD_URL}image-1`);
+    expect(put!.headers).toEqual({ Authorization: "Bearer access-1", "Content-Type": "image/png" });
+    expect(put!.bytes).toEqual(PNG);
+    expect(world.harness.activity).toEqual([
+      expect.objectContaining({
+        message: "Uploaded chart.png for Acme",
+        entityType: "linkedin_page_media",
+        entityId: "urn:li:image:1",
+        metadata: expect.objectContaining({
+          mediaUrn: "urn:li:image:1",
+          attachmentId: file.id,
+          sha256: file.sha256,
+          organizationId: "111",
+        }),
+      }),
+    ]);
+  });
+
+  it("uploads a PDF through the Documents API", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia();
+    const file = seedAttachment(world, { contentType: "application/pdf", bytes: PDF, originalFilename: "q3.pdf" });
+
+    const result = await tool("linkedin-page-upload", { attachmentId: file.id });
+
+    expect(result).toHaveProperty(
+      "content",
+      "Uploaded q3.pdf for Acme as urn:li:document:1 (AVAILABLE). Pass mediaUrn to linkedin-page-post with a title.",
+    );
+    expect(world.linkedin.requestsTo(`${DOCUMENTS_URL}?action=initializeUpload`)).toHaveLength(1);
+    expect(world.linkedin.requestsTo(IMAGES_URL)).toHaveLength(0);
+    expect(world.linkedin.requestsTo(UPLOAD_URL)[0]!.bytes).toEqual(PDF);
+  });
+
+  it("refuses a file type that LinkedIn does not accept before any LinkedIn call", async () => {
+    await connect([ACME]);
+    const file = seedAttachment(world, { contentType: "image/webp", bytes: PNG });
+    const before = world.linkedin.requests.length;
+
+    expect(await tool("linkedin-page-upload", { attachmentId: file.id })).toEqual({
+      error:
+        "LinkedIn does not accept image/webp. " +
+        "Attach a JPG, GIF or PNG image, or a PDF, DOC, DOCX, PPT or PPTX document.",
+    });
+    expect(world.linkedin.requests).toHaveLength(before);
+  });
+
+  it("refuses an attachment that it cannot read", async () => {
+    await connect([ACME]);
+    const file = seedAttachment(world, { contentType: "image/png", bytes: PNG }, await world.addCompany());
+
+    expect(await tool("linkedin-page-upload", { attachmentId: file.id })).toEqual({
+      error: `Attachment ${file.id} was not found, or the plugin cannot read its issue.`,
+    });
+  });
+
+  it("refuses a file over 10 MiB", async () => {
+    await connect([ACME]);
+    const file = seedAttachment(world, { contentType: "application/pdf", bytes: PDF, byteSize: MAX_MEDIA_BYTES + 1 });
+
+    // The host writes this error text; the test pins only the cap.
+    expect(await tool("linkedin-page-upload", { attachmentId: file.id })).toEqual({
+      error: expect.stringMatching(new RegExp(`over the ${MAX_MEDIA_BYTES}-byte cap$`)),
+    });
+    expect(world.linkedin.requestsTo(DOCUMENTS_URL)).toHaveLength(0);
+  });
+
+  it("expires the Page connection when LinkedIn rejects the token at the upload", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptMedia();
+    world.linkedin.on("PUT", UPLOAD_URL, () => json({ code: "REVOKED_ACCESS_TOKEN" }, 401));
+    const file = seedAttachment(world, { contentType: "image/png", bytes: PNG });
+
+    expect(await tool("linkedin-page-upload", { attachmentId: file.id })).toEqual({
+      error:
+        'LinkedIn rejected the token for Page 111 (LinkedIn image upload 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
+        "Reconnect the Page in Settings.",
+    });
+    expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "expired" })]);
   });
 });
 

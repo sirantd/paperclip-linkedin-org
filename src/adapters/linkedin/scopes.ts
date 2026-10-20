@@ -1,5 +1,5 @@
 /** An action that an agent does as a Page. */
-export type PageAction = "post" | "react" | "comment";
+export type PageAction = "post" | "react" | "comment" | "upload";
 
 /**
  * Each scope that connect requests, with the steps that need it. README.md
@@ -15,6 +15,11 @@ export type PageAction = "post" | "react" | "comment";
  * the `r_` scopes, but connect requests them until a live test shows that react
  * and comment work without them.
  *
+ * Upload, and a post with an uploaded file, also read the file status with GET
+ * /rest/images or /rest/documents. The Images API lists `w_organization_social`
+ * for rest/images access and calls only `w_member_social` write-only, so no `r_`
+ * scope is given for that read. A live test must confirm it (issue #14).
+ *
  * Deliberately no `openid`/`profile`/`email`: those belong to the separate
  * Sign In with LinkedIn product. An app approved only for Community Management
  * rejects the whole authorization with unauthorized_scope_error if they are
@@ -23,7 +28,7 @@ export type PageAction = "post" | "react" | "comment";
  */
 export const SCOPE_NEEDS: Readonly<Record<string, readonly (PageAction | "connect")[]>> = {
   r_organization_social: [],
-  w_organization_social: ["post", "react", "comment"],
+  w_organization_social: ["post", "react", "comment", "upload"],
   r_organization_social_feed: [],
   w_organization_social_feed: ["react", "comment"],
   rw_organization_admin: ["connect"],
