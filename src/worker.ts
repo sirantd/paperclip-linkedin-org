@@ -251,7 +251,9 @@ const routes: Record<RouteKey, RouteHandler> = {
 
   async disconnect({ companyId, params }, { pages }) {
     const organizationRef = params.organizationId;
-    await pages.disconnect(companyId, organizationRef);
+    if (!(await pages.disconnect(companyId, organizationRef))) {
+      return { status: 404, body: { error: `The company has no Page connection for Page ${organizationRef}.` } };
+    }
     return { status: 200, body: { disconnected: organizationRef } };
   },
 };

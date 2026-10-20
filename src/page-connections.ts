@@ -112,8 +112,11 @@ export interface PageConnections {
    * authorizing member administers has one active Page connection.
    */
   finishConnect(companyId: string, redirect: LinkedInRedirect, operatorId: string): Promise<ConnectOutcome>;
-  /** Revoke the Page connection of the Page that `organizationRef` names. */
-  disconnect(companyId: string, organizationRef: string): Promise<void>;
+  /**
+   * Revoke the Page connection of the Page that `organizationRef` names, in
+   * any status. False if the company has no Page connection for that Page.
+   */
+  disconnect(companyId: string, organizationRef: string): Promise<boolean>;
 }
 
 /**
@@ -270,11 +273,12 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
     },
 
     async disconnect(companyId, organizationRef) {
-      await ctx.db.execute(
+      const { rowCount } = await ctx.db.execute(
         `update ${table(ctx)} set status = 'revoked', access_token_sealed = '', refresh_token_sealed = null, updated_at = now()
           where company_id = $1 and organization_id = $2`,
         [companyId, requireOrganizationId(organizationRef)],
       );
+      return rowCount > 0;
     },
   };
 }

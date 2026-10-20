@@ -476,6 +476,15 @@ describe("disconnect route", () => {
     });
     expect((await listPages())[1]).toMatchObject({ organization_id: "222", status: "revoked" });
   });
+
+  it("answers 404 for a Page that the company never connected", async () => {
+    await connect([ACME]);
+
+    expect(await route("disconnect", { params: { organizationId: "222" } })).toEqual({
+      status: 404,
+      body: { error: "The company has no Page connection for Page 222." },
+    });
+  });
 });
 
 describe("routing", () => {

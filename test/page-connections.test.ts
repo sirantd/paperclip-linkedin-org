@@ -786,7 +786,7 @@ describe("disconnect", () => {
   it("revokes the Page connection and clears its tokens", async () => {
     await connect([ACME, GLOBEX]);
 
-    await pages.disconnect(world.companyId, "222");
+    expect(await pages.disconnect(world.companyId, "222")).toBe(true);
 
     expect(await statusOf("222")).toBe("revoked");
     expect(await statusOf("111")).toBe("active");
@@ -801,6 +801,18 @@ describe("disconnect", () => {
     await connect([ACME, GLOBEX]);
     await pages.disconnect(world.companyId, "urn:li:organization:222");
     expect(await statusOf("222")).toBe("revoked");
+  });
+
+  it("revokes a revoked Page connection again", async () => {
+    await connect([ACME]);
+    await pages.disconnect(world.companyId, "111");
+    expect(await pages.disconnect(world.companyId, "111")).toBe(true);
+  });
+
+  it("reports a Page that the company never connected", async () => {
+    await connect([ACME]);
+    expect(await pages.disconnect(world.companyId, "222")).toBe(false);
+    expect(await statusOf("111")).toBe("active");
   });
 
   it("refuses a reference that is not an organization reference", async () => {
