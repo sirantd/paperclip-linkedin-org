@@ -505,6 +505,10 @@ describe("disconnect route", () => {
 });
 
 describe("routing", () => {
+  it.each(manifest.apiRoutes.map((r) => r.routeKey))("has a handler for the manifest route %s", async (routeKey) => {
+    expect(await route(routeKey)).not.toEqual({ status: 404, body: { error: `Unknown route ${routeKey}` } });
+  });
+
   it("answers 404 for an unknown route", async () => {
     expect(await route("nope")).toEqual({ status: 404, body: { error: "Unknown route nope" } });
   });
