@@ -73,3 +73,11 @@ _Avoid_: install, link, onboard
 **Disconnect**:
 The operator action that revokes a Page connection.
 _Avoid_: unlink, remove
+
+**OAuth state**:
+The random value that connect sends to LinkedIn and that LinkedIn returns in the redirect. It belongs to the operator who started connect. It is valid for one finish within 10 minutes. The first finish uses it up, whatever the outcome.
+_Avoid_: nonce, token
+
+**Connect outcome**:
+The result of one finish of connect: the connected Pages, or a refusal with its kind and operator-facing text. One connect outcome gives one HTTP status on each finish route.
+_Avoid_: connect result, connect error

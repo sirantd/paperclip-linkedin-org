@@ -39,9 +39,45 @@ export interface PageSummary {
 }
 
 /**
+ * The fields of the LinkedIn redirect to the redirect URI: `code` and `state`
+ * after an approval, `error`, `error_description` and `state` after a refusal.
+ * A value that is not one string counts as absent.
+ */
+export type LinkedInRedirect = Readonly<Partial<Record<"code" | "state" | "error" | "error_description", unknown>>>;
+
+/**
+ * Why connect made no Page connection. The operator can remove the cause of
+ * the first six and connect again. The last two are faults of LinkedIn or of
+ * the plugin.
+ */
+export type ConnectRefusal =
+  /** LinkedIn sent an error: the authorizing member declined, or LinkedIn refused the authorization. */
+  | "declined"
+  /** The redirect has no authorization code or no OAuth state. */
+  | "incomplete_redirect"
+  /** The OAuth state is unknown, expired or used, or a different operator started connect. */
+  | "invalid_state"
+  /** LinkedIn refused the authorization code: it expired or was used. */
+  | "code_refused"
+  /** LinkedIn did not grant the needed scopes, or did not report the granted scopes. */
+  | "grant_refused"
+  /** The authorizing member administers no Page. */
+  | "no_page"
+  /** The token endpoint or a LinkedIn call failed. */
+  | "linkedin_failed"
+  /** The plugin settings, the DEK or the database failed. */
+  | "plugin_failed";
+
+/** The result of one finish of connect: the connected Pages, or a refusal with operator-facing text. */
+export type ConnectOutcome =
+  | { kind: "connected"; pages: AdministeredPage[] }
+  | { kind: ConnectRefusal; reason: string };
+
+/**
  * The Page connections of each company: connect, act as a Page, list and
  * disconnect. Credentials, Page selection, token refresh and expiry, sealing
- * and storage stay behind this interface. Errors carry operator-facing text.
+ * and storage stay behind this interface. Errors and connect refusals carry
+ * operator-facing text.
  * An organization reference names a Page by its organization id or its
  * Organization URN; this interface reads it into the organization id once.
  */
@@ -64,13 +100,18 @@ export interface PageConnections {
   ): Promise<T>;
   /** Every Page connection of the company, in any status, by name with unnamed Pages last. */
   list(companyId: string): Promise<PageSummary[]>;
-  /** Begin connect: remember an OAuth state and return the LinkedIn authorization URL. */
+  /** Begin connect: remember an OAuth state for the operator and return the LinkedIn authorization URL. */
   startConnect(
     companyId: string,
     operatorId: string,
   ): Promise<{ authorizationUrl: string; scopes: readonly string[] }>;
-  /** Finish connect: one active Page connection for each Page the authorizing member administers. */
-  finishConnect(companyId: string, code: string, state: string, operatorId: string): Promise<AdministeredPage[]>;
+  /**
+   * Finish connect with the redirect as LinkedIn sent it. The first finish of
+   * an OAuth state uses it up, whatever the outcome. Only the operator who
+   * started connect can finish it. If connect succeeds, each Page that the
+   * authorizing member administers has one active Page connection.
+   */
+  finishConnect(companyId: string, redirect: LinkedInRedirect, operatorId: string): Promise<ConnectOutcome>;
   /** Revoke the Page connection of the Page that `organizationRef` names. */
   disconnect(companyId: string, organizationRef: string): Promise<void>;
 }
@@ -131,6 +172,16 @@ const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 /** An OAuth state older than this is refused; the operator must start connect again. */
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+/** What startConnect stores for an OAuth state until its first finish. */
+interface PendingConnect {
+  createdAt: number;
+  /** The operator who started connect. */
+  actorId: string;
+}
+
+/** The refusals that are faults of LinkedIn or of the plugin; finishConnect logs them. */
+const CONNECT_FAULTS: ReadonlySet<ConnectRefusal> = new Set(["linkedin_failed", "plugin_failed"]);
 
 export function createPageConnections(ctx: PluginContext, fileTransport?: FileTransport): PageConnections {
   /** The refresh in progress for each Page connection, by row id; concurrent calls share it. */
@@ -198,7 +249,8 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
     async startConnect(companyId, operatorId) {
       const creds = await loadCredentials(ctx, companyId);
       const state = crypto.randomUUID();
-      await ctx.state.set(oauthStateKey(companyId, state), { createdAt: Date.now(), actorId: operatorId });
+      const pending: PendingConnect = { createdAt: Date.now(), actorId: operatorId };
+      await ctx.state.set(oauthStateKey(companyId, state), pending);
       return {
         authorizationUrl: buildAuthorizationUrl({
           clientId: creds.clientId,
@@ -209,8 +261,12 @@ export function createPageConnections(ctx: PluginContext, fileTransport?: FileTr
       };
     },
 
-    finishConnect(companyId, code, state, operatorId) {
-      return completeOAuth(ctx, companyId, code, state, operatorId);
+    async finishConnect(companyId, redirect, operatorId) {
+      const outcome = await completeOAuth(ctx, companyId, redirect, operatorId);
+      if (outcome.kind !== "connected" && CONNECT_FAULTS.has(outcome.kind)) {
+        ctx.logger.error("LinkedIn Page connect failed", { companyId, kind: outcome.kind, reason: outcome.reason });
+      }
+      return outcome;
     },
 
     async disconnect(companyId, organizationRef) {
@@ -452,43 +508,113 @@ function markExpired(ctx: PluginContext, id: string): Promise<{ rowCount: number
 }
 
 /**
- * Exchange an authorization code, check the granted scopes, and upsert one
- * connection row per Page the authorizing member administers.
+ * Use up the OAuth state, exchange the authorization code, check the granted
+ * scopes, and upsert one Page connection for each Page that the authorizing
+ * member administers. Each step that fails gives its refusal.
  */
 async function completeOAuth(
   ctx: PluginContext,
   companyId: string,
-  code: string,
-  state: string,
-  actorId: string,
-): Promise<AdministeredPage[]> {
-  const stateKey = oauthStateKey(companyId, state);
-  const pending = (await ctx.state.get(stateKey)) as { createdAt: number } | null;
-  if (!pending) throw new Error("Unknown or expired OAuth state");
-  if (Date.now() - pending.createdAt > OAUTH_STATE_TTL_MS) {
-    await ctx.state.delete(stateKey);
-    throw new Error("Unknown or expired OAuth state");
+  redirect: LinkedInRedirect,
+  operatorId: string,
+): Promise<ConnectOutcome> {
+  const code = redirectField(redirect, "code");
+  const state = redirectField(redirect, "state");
+  const error = redirectField(redirect, "error");
+  const pending = state ? await takePendingConnect(ctx, companyId, state) : null;
+
+  if (error) {
+    const description = redirectField(redirect, "error_description");
+    return { kind: "declined", reason: description ? `${error}: ${description}` : error };
+  }
+  if (!code || !state) {
+    return {
+      kind: "incomplete_redirect",
+      reason: "LinkedIn did not return an authorization code and an OAuth state. Start connect again.",
+    };
+  }
+  if (!pending || Date.now() - pending.createdAt > OAUTH_STATE_TTL_MS) {
+    return { kind: "invalid_state", reason: "The OAuth state is unknown, expired or used. Start connect again." };
+  }
+  if (pending.actorId !== operatorId) {
+    ctx.logger.warn("LinkedIn Page connect finished by a different operator", {
+      companyId,
+      startedBy: pending.actorId,
+      finishedBy: operatorId,
+    });
+    return { kind: "invalid_state", reason: "A different operator started this connect. Start connect again." };
   }
 
-  const creds = await loadCredentials(ctx, companyId);
-  const tokens = await exchangeCode(ctx.http, {
-    code,
-    clientId: creds.clientId,
-    clientSecret: creds.clientSecret,
-    redirectUri: creds.redirectUri,
-  });
-  const scopes = grantedScopes(tokens.scope);
-
-  const pages = await listAdministeredPages(ctx.http, tokens.accessToken);
-  if (pages.length === 0) {
-    throw new Error(
-      "The authorizing member does not administer any LinkedIn Page. " +
-        "Grant them an ADMINISTRATOR role on the Page and reconnect.",
-    );
-  }
-
+  let creds: Credentials;
   try {
-    const stored = storedTokens(tokens, creds.dek);
+    creds = await loadCredentials(ctx, companyId);
+  } catch (err) {
+    return { kind: "plugin_failed", reason: (err as Error).message };
+  }
+  try {
+    // Examine the DEK before LinkedIn spends the code.
+    sealToken("", creds.dek);
+  } catch (err) {
+    return {
+      kind: "plugin_failed",
+      reason:
+        `The Token Encryption Key (dekRef) cannot seal tokens: ${(err as Error).message}. ` +
+        "Correct it in Settings, then connect again.",
+    };
+  }
+
+  let tokens: LinkedInTokens;
+  try {
+    tokens = await exchangeCode(ctx.http, {
+      code,
+      clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
+      redirectUri: creds.redirectUri,
+    });
+  } catch (err) {
+    if (err instanceof LinkedInOAuthError && err.code === "invalid_grant") {
+      return {
+        kind: "code_refused",
+        reason: `LinkedIn refused the authorization code (${err.message}). Start connect again.`,
+      };
+    }
+    return {
+      kind: "linkedin_failed",
+      reason: `LinkedIn did not exchange the authorization code (${(err as Error).message}).`,
+    };
+  }
+
+  let scopes: string[];
+  try {
+    scopes = grantedScopes(tokens.scope);
+  } catch (err) {
+    return { kind: "grant_refused", reason: (err as Error).message };
+  }
+
+  let pages: AdministeredPage[];
+  try {
+    pages = await listAdministeredPages(ctx.http, tokens.accessToken);
+  } catch (err) {
+    // A version sunset already names its fix.
+    const sunset = err instanceof LinkedInApiError && err.kind === "version_sunset";
+    return {
+      kind: "linkedin_failed",
+      reason: sunset
+        ? (err as Error).message
+        : `LinkedIn did not list the Pages that the authorizing member administers (${(err as Error).message}).`,
+    };
+  }
+  if (pages.length === 0) {
+    return {
+      kind: "no_page",
+      reason:
+        "The authorizing member does not administer any LinkedIn Page. " +
+        "Grant them an ADMINISTRATOR role on the Page and reconnect.",
+    };
+  }
+
+  const stored = storedTokens(tokens, creds.dek);
+  try {
     for (const page of pages) {
       await ctx.db.execute(
         `insert into ${table(ctx)}
@@ -515,7 +641,7 @@ async function completeOAuth(
           page.organizationId,
           page.name,
           page.vanityName,
-          actorId,
+          operatorId,
           null, // member URN unavailable without the openid scope
           scopes.join(","),
           stored.accessTokenSealed,
@@ -533,14 +659,36 @@ async function completeOAuth(
       pageCount: pages.length,
       error: (err as Error).message,
     });
-    throw new Error(
-      "Connected to LinkedIn but could not store the connection. See the plugin logs for the database error.",
-    );
+    return {
+      kind: "plugin_failed",
+      reason: "Connected to LinkedIn but could not store the connection. See the plugin logs for the database error.",
+    };
   }
 
-  await ctx.state.delete(stateKey);
+  return { kind: "connected", pages };
+}
 
-  return pages;
+/** A field of the redirect as one string, or null when it is absent, empty or repeated. */
+function redirectField(redirect: LinkedInRedirect, name: keyof LinkedInRedirect): string | null {
+  const value = redirect[name];
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+/**
+ * The pending connect of an OAuth state, or null. The state is deleted, so
+ * only the first finish can use it. ctx.state has no atomic read and delete:
+ * two finishes at the same moment can both read the state, and LinkedIn then
+ * refuses the second exchange of the code.
+ */
+async function takePendingConnect(
+  ctx: PluginContext,
+  companyId: string,
+  state: string,
+): Promise<PendingConnect | null> {
+  const key = oauthStateKey(companyId, state);
+  const pending = (await ctx.state.get(key)) as PendingConnect | null;
+  if (pending) await ctx.state.delete(key);
+  return pending;
 }
 
 function oauthStateKey(companyId: string, state: string): ScopeKey {

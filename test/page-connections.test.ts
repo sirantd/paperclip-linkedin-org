@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createPageConnections, type PageConnections } from "../src/page-connections.js";
+import { randomUUID } from "node:crypto";
+import { createPageConnections, type LinkedInRedirect, type PageConnections } from "../src/page-connections.js";
 import { openToken } from "../src/crypto.js";
 import { REQUESTED_SCOPES } from "../src/adapters/linkedin/scopes.js";
 import { LinkedInApiError } from "../src/adapters/linkedin/errors.js";
+import { LINKEDIN_VERSION } from "../src/adapters/linkedin/constants.js";
 import {
   ACME,
   GLOBEX,
   ONE_MINUTE_S,
+  ORG_ACLS_URL,
+  ORGS_URL,
   REACTIONS_URL,
   SIXTY_DAYS_S,
+  TOKEN_URL,
   json,
   pluginConfig,
   tokenResponse,
@@ -32,14 +37,32 @@ beforeEach(async () => {
 
 afterEach(() => world.close());
 
-async function startConnect(): Promise<string> {
-  const { authorizationUrl } = await pages.startConnect(world.companyId, "operator-1");
+async function startConnect(companyId = world.companyId): Promise<string> {
+  const { authorizationUrl } = await pages.startConnect(companyId, "operator-1");
   return new URL(authorizationUrl).searchParams.get("state")!;
 }
 
-async function connect(fakePages: FakePage[], tokens: Record<string, unknown> = {}) {
+/** Finish connect with `redirect`, as LinkedIn sent it to the browser of `operatorId`. */
+function finish(redirect: LinkedInRedirect, operatorId = "operator-1", companyId = world.companyId) {
+  return pages.finishConnect(companyId, redirect, operatorId);
+}
+
+/** Answer connect with `fakePages`, start one connect and finish it. */
+async function connectOutcome(fakePages: FakePage[], tokens: Record<string, unknown> = {}) {
   world.linkedin.scriptConnect(fakePages, tokens);
-  return pages.finishConnect(world.companyId, "code-1", await startConnect(), "operator-1");
+  return finish({ code: "code-1", state: await startConnect() });
+}
+
+/** Connect `fakePages` and return the connected Pages. A refusal fails the test. */
+async function connect(fakePages: FakePage[], tokens: Record<string, unknown> = {}) {
+  const outcome = await connectOutcome(fakePages, tokens);
+  if (outcome.kind !== "connected") throw new Error(`Connect refused (${outcome.kind}): ${outcome.reason}`);
+  return outcome.pages;
+}
+
+/** The stored pending connect of an OAuth state. */
+function pendingConnect(state: string) {
+  return world.harness.getState({ scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` });
 }
 
 /** The acting Page that actAs hands to its work. */
@@ -390,7 +413,7 @@ describe("list", () => {
 });
 
 describe("startConnect", () => {
-  it("returns the authorization URL and stores the OAuth state", async () => {
+  it("returns the authorization URL and stores the OAuth state for the operator", async () => {
     const { authorizationUrl, scopes } = await pages.startConnect(world.companyId, "operator-1");
 
     expect(scopes).toEqual(REQUESTED_SCOPES);
@@ -402,9 +425,10 @@ describe("startConnect", () => {
       `https://paperclip.example.com${REDIRECT_PATH}?companyId=${world.companyId}`,
     );
     expect(url.searchParams.get("scope")).toBe(REQUESTED_SCOPES.join(" "));
-    const state = url.searchParams.get("state")!;
-    expect(world.harness.getState({ scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` }))
-      .toEqual({ createdAt: expect.any(Number), actorId: "operator-1" });
+    expect(pendingConnect(url.searchParams.get("state")!)).toEqual({
+      createdAt: expect.any(Number),
+      actorId: "operator-1",
+    });
   });
 
   it("fails for a company with no plugin config", async () => {
@@ -431,12 +455,13 @@ describe("startConnect", () => {
 
 describe("finishConnect", () => {
   it("creates one active Page connection for each administered Page", async () => {
-    const connected = await connect([ACME, GLOBEX]);
-
-    expect(connected).toEqual([
-      { organizationUrn: "urn:li:organization:111", organizationId: "111", name: "Acme", vanityName: "acme" },
-      { organizationUrn: "urn:li:organization:222", organizationId: "222", name: "Globex", vanityName: "globex" },
-    ]);
+    expect(await connectOutcome([ACME, GLOBEX])).toEqual({
+      kind: "connected",
+      pages: [
+        { organizationUrn: "urn:li:organization:111", organizationId: "111", name: "Acme", vanityName: "acme" },
+        { organizationUrn: "urn:li:organization:222", organizationId: "222", name: "Globex", vanityName: "globex" },
+      ],
+    });
     expect(Object.fromEntries(world.linkedin.tokenCalls()[0]!)).toEqual({
       grant_type: "authorization_code",
       code: "code-1",
@@ -469,15 +494,6 @@ describe("finishConnect", () => {
     expect(row!.scopes).toEqual(granted);
   });
 
-  it("deletes the OAuth state after a successful connect", async () => {
-    world.linkedin.scriptConnect([ACME]);
-    const state = await startConnect();
-    await pages.finishConnect(world.companyId, "code-1", state, "operator-1");
-    expect(
-      world.harness.getState({ scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` }),
-    ).toBeFalsy();
-  });
-
   it("renews an existing Page connection in place", async () => {
     await connect([ACME], { expires_in: ONE_MINUTE_S, refresh_token: undefined });
     await expect(actAs()).rejects.toThrow();
@@ -490,61 +506,279 @@ describe("finishConnect", () => {
     expect(reactionTokens()).toEqual(["Bearer access-2"]);
   });
 
-  it("rejects an unknown OAuth state", async () => {
-    await expect(pages.finishConnect(world.companyId, "code-1", "nope", "operator-1")).rejects.toThrow(
-      "Unknown or expired OAuth state",
-    );
-  });
+  describe("the OAuth state", () => {
+    const UNKNOWN_STATE = {
+      kind: "invalid_state",
+      reason: "The OAuth state is unknown, expired or used. Start connect again.",
+    };
 
-  describe("OAuth state age", () => {
-    async function stateCreatedMinutesAgo(minutes: number): Promise<string> {
+    it("is deleted after a successful connect", async () => {
+      world.linkedin.scriptConnect([ACME]);
       const state = await startConnect();
-      await world.ctx.state.set(
-        { scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` },
-        { createdAt: Date.now() - minutes * 60 * 1000, actorId: "operator-1" },
-      );
-      return state;
-    }
-
-    it("accepts an OAuth state younger than ten minutes", async () => {
-      world.linkedin.scriptConnect([ACME]);
-      const state = await stateCreatedMinutesAgo(9);
-      expect(await pages.finishConnect(world.companyId, "code-1", state, "operator-1")).toHaveLength(1);
+      expect(await finish({ code: "code-1", state })).toHaveProperty("kind", "connected");
+      expect(pendingConnect(state)).toBeFalsy();
     });
 
-    it("rejects and deletes an OAuth state older than ten minutes", async () => {
+    it("refuses an unknown OAuth state", async () => {
       world.linkedin.scriptConnect([ACME]);
-      const state = await stateCreatedMinutesAgo(11);
-
-      await expect(pages.finishConnect(world.companyId, "code-1", state, "operator-1")).rejects.toThrow(
-        "Unknown or expired OAuth state",
-      );
+      expect(await finish({ code: "code-1", state: "nope" })).toEqual(UNKNOWN_STATE);
       expect(world.linkedin.tokenCalls()).toHaveLength(0);
-      expect(
-        world.harness.getState({ scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` }),
-      ).toBeFalsy();
+    });
+
+    it("refuses a second finish with one OAuth state", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      const state = await startConnect();
+      await finish({ code: "code-1", state });
+
+      expect(await finish({ code: "code-1", state })).toEqual(UNKNOWN_STATE);
+      expect(world.linkedin.tokenCalls()).toHaveLength(1);
+    });
+
+    it("is used up by a refused connect", async () => {
+      world.linkedin.scriptConnect([]);
+      const state = await startConnect();
+      expect(await finish({ code: "code-1", state })).toHaveProperty("kind", "no_page");
+
+      world.linkedin.scriptConnect([ACME]);
+      expect(await finish({ code: "code-1", state })).toEqual(UNKNOWN_STATE);
+      expect(world.linkedin.tokenCalls()).toHaveLength(1);
+    });
+
+    it("is used up by a refusal that LinkedIn sent", async () => {
+      const state = await startConnect();
+      await finish({ error: "user_cancelled_authorize", state });
+      expect(pendingConnect(state)).toBeFalsy();
+    });
+
+    it("refuses and deletes an OAuth state that a different operator started", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      const state = await startConnect();
+
+      expect(await finish({ code: "code-1", state }, "operator-2")).toEqual({
+        kind: "invalid_state",
+        reason: "A different operator started this connect. Start connect again.",
+      });
+      expect(pendingConnect(state)).toBeFalsy();
+      expect(world.linkedin.tokenCalls()).toHaveLength(0);
+      expect(world.harness.logs).toContainEqual({
+        level: "warn",
+        message: "LinkedIn Page connect finished by a different operator",
+        meta: { companyId: world.companyId, startedBy: "operator-1", finishedBy: "operator-2" },
+      });
+    });
+
+    describe("age", () => {
+      async function stateCreatedMinutesAgo(minutes: number): Promise<string> {
+        const state = await startConnect();
+        await world.ctx.state.set(
+          { scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` },
+          { createdAt: Date.now() - minutes * 60 * 1000, actorId: "operator-1" },
+        );
+        return state;
+      }
+
+      it("accepts an OAuth state younger than ten minutes", async () => {
+        world.linkedin.scriptConnect([ACME]);
+        const state = await stateCreatedMinutesAgo(9);
+        expect(await finish({ code: "code-1", state })).toHaveProperty("kind", "connected");
+      });
+
+      it("refuses and deletes an OAuth state older than ten minutes", async () => {
+        world.linkedin.scriptConnect([ACME]);
+        const state = await stateCreatedMinutesAgo(11);
+
+        expect(await finish({ code: "code-1", state })).toEqual(UNKNOWN_STATE);
+        expect(world.linkedin.tokenCalls()).toHaveLength(0);
+        expect(pendingConnect(state)).toBeFalsy();
+      });
     });
   });
 
-  it("rejects a grant without the organization feed scope", async () => {
-    await expect(
-      connect([ACME], { scope: "r_organization_social,w_organization_social,rw_organization_admin" }),
-    ).rejects.toThrow(/^LinkedIn did not grant w_organization_social_feed\. /);
-    expect(await pages.list(world.companyId)).toEqual([]);
+  describe("the redirect", () => {
+    it("reports a refusal that LinkedIn sent", async () => {
+      const state = await startConnect();
+      expect(
+        await finish({ error: "user_cancelled_login", error_description: "The user cancelled", state }),
+      ).toEqual({ kind: "declined", reason: "user_cancelled_login: The user cancelled" });
+      expect(world.linkedin.tokenCalls()).toHaveLength(0);
+    });
+
+    it("reports a refusal without a description", async () => {
+      expect(await finish({ error: "user_cancelled_authorize" })).toEqual({
+        kind: "declined",
+        reason: "user_cancelled_authorize",
+      });
+    });
+
+    it.each([
+      ["no code", { state: "state-1" }],
+      ["no state", { code: "code-1" }],
+      ["a repeated code", { code: ["code-1", "code-2"], state: "state-1" }],
+    ])("refuses a redirect with %s", async (_case, redirect) => {
+      expect(await finish(redirect)).toEqual({
+        kind: "incomplete_redirect",
+        reason: "LinkedIn did not return an authorization code and an OAuth state. Start connect again.",
+      });
+      expect(world.linkedin.tokenCalls()).toHaveLength(0);
+    });
   });
 
-  it("rejects a grant that names no scopes", async () => {
-    await expect(connect([ACME], { scope: undefined })).rejects.toThrow(
-      /^LinkedIn did not report the granted scopes/,
-    );
-    expect(await pages.list(world.companyId)).toEqual([]);
+  describe("refusals", () => {
+    it("refuses an authorization code that LinkedIn refuses", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      world.linkedin.on("POST", TOKEN_URL, () => json({ error: "invalid_grant" }, 400));
+
+      expect(await finish({ code: "code-1", state: await startConnect() })).toEqual({
+        kind: "code_refused",
+        reason:
+          'LinkedIn refused the authorization code (LinkedIn token endpoint 400: {"error":"invalid_grant"}). ' +
+          "Start connect again.",
+      });
+    });
+
+    it("refuses a grant without the organization feed scope", async () => {
+      expect(
+        await connectOutcome([ACME], { scope: "r_organization_social,w_organization_social,rw_organization_admin" }),
+      ).toEqual({
+        kind: "grant_refused",
+        reason: expect.stringMatching(/^LinkedIn did not grant w_organization_social_feed\. /),
+      });
+      expect(await pages.list(world.companyId)).toEqual([]);
+    });
+
+    it("refuses a grant that names no scopes", async () => {
+      expect(await connectOutcome([ACME], { scope: undefined })).toEqual({
+        kind: "grant_refused",
+        reason: expect.stringMatching(/^LinkedIn did not report the granted scopes/),
+      });
+      expect(await pages.list(world.companyId)).toEqual([]);
+    });
+
+    it("refuses a member who administers no Page", async () => {
+      expect(await connectOutcome([])).toEqual({
+        kind: "no_page",
+        reason:
+          "The authorizing member does not administer any LinkedIn Page. " +
+          "Grant them an ADMINISTRATOR role on the Page and reconnect.",
+      });
+    });
   });
 
-  it("rejects a member who administers no Page", async () => {
-    await expect(connect([])).rejects.toThrow(
-      "The authorizing member does not administer any LinkedIn Page. " +
-        "Grant them an ADMINISTRATOR role on the Page and reconnect.",
-    );
+  describe("faults", () => {
+    it.each([
+      ["a LinkedIn outage", () => json({ message: "Service Unavailable" }, 503)],
+      ["a wrong Client Secret", () => json({ error: "invalid_client" }, 401)],
+      [
+        "a network error",
+        () => {
+          throw new TypeError("fetch failed");
+        },
+      ],
+    ])("reports %s at the code exchange as a LinkedIn failure and logs it", async (_cause, respond) => {
+      world.linkedin.scriptConnect([ACME]);
+      world.linkedin.on("POST", TOKEN_URL, respond);
+
+      const outcome = await finish({ code: "code-1", state: await startConnect() });
+
+      expect(outcome).toEqual({
+        kind: "linkedin_failed",
+        reason: expect.stringMatching(/^LinkedIn did not exchange the authorization code \(.+\)\.$/s),
+      });
+      expect(world.harness.logs).toContainEqual({
+        level: "error",
+        message: "LinkedIn Page connect failed",
+        meta: { companyId: world.companyId, ...outcome },
+      });
+      expect(await pages.list(world.companyId)).toEqual([]);
+    });
+
+    it("reports a failed Page list as a LinkedIn failure", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      world.linkedin.on("GET", ORG_ACLS_URL, () => json({ message: "Internal Server Error" }, 500));
+
+      expect(await finish({ code: "code-1", state: await startConnect() })).toEqual({
+        kind: "linkedin_failed",
+        reason:
+          "LinkedIn did not list the Pages that the authorizing member administers " +
+          '(organizationAcls 500: {"message":"Internal Server Error"}).',
+      });
+    });
+
+    it("names the developer action when LinkedIn retired the API version", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      world.linkedin.on("GET", ORG_ACLS_URL, () => json({ code: "NONEXISTENT_VERSION" }, 426));
+
+      expect(await finish({ code: "code-1", state: await startConnect() })).toEqual({
+        kind: "linkedin_failed",
+        reason:
+          `LinkedIn retired API version ${LINKEDIN_VERSION} (organizationAcls 426: {"code":"NONEXISTENT_VERSION"}). ` +
+          "Update LINKEDIN_VERSION and release the plugin. A reconnect does not help.",
+      });
+    });
+
+    it("refuses a DEK that cannot seal tokens before LinkedIn spends the code", async () => {
+      world.secrets.dek = Buffer.alloc(16).toString("base64");
+      world.linkedin.scriptConnect([ACME]);
+
+      expect(await finish({ code: "code-1", state: await startConnect() })).toEqual({
+        kind: "plugin_failed",
+        reason:
+          "The Token Encryption Key (dekRef) cannot seal tokens: DEK must decode to exactly 32 bytes, got 16. " +
+          "Correct it in Settings, then connect again.",
+      });
+      expect(world.linkedin.tokenCalls()).toHaveLength(0);
+    });
+
+    it("reports a company whose plugin config is gone as a plugin failure", async () => {
+      const state = await startConnect();
+      world.configs.delete(world.companyId);
+
+      expect(await finish({ code: "code-1", state })).toEqual({
+        kind: "plugin_failed",
+        reason: "LinkedIn Page plugin is not configured for this company",
+      });
+    });
+
+    it("reports a database failure without the database error", async () => {
+      // A company with a config but no company row: the insert breaks its foreign key.
+      const ghost = randomUUID();
+      world.configs.set(ghost, pluginConfig());
+      world.linkedin.scriptConnect([ACME]);
+
+      expect(await finish({ code: "code-1", state: await startConnect(ghost) }, "operator-1", ghost)).toEqual({
+        kind: "plugin_failed",
+        reason: "Connected to LinkedIn but could not store the connection. See the plugin logs for the database error.",
+      });
+      expect(world.harness.logs).toContainEqual({
+        level: "error",
+        message: "failed to store LinkedIn Page connection",
+        meta: { companyId: ghost, pageCount: 1, error: expect.stringContaining("foreign key") },
+      });
+    });
+  });
+
+  describe("Page names", () => {
+    it.each([
+      ["fails", () => json({ message: "Internal Server Error" }, 500)],
+      [
+        "throws",
+        () => {
+          throw new TypeError("fetch failed");
+        },
+      ],
+      ["returns no name", () => json({ results: { "111": {} } })],
+    ])("connects a Page without a name when the names call %s", async (_case, respond) => {
+      world.linkedin.scriptConnect([ACME]);
+      world.linkedin.on("GET", ORGS_URL, respond);
+
+      expect(await finish({ code: "code-1", state: await startConnect() })).toEqual({
+        kind: "connected",
+        pages: [{ organizationUrn: "urn:li:organization:111", organizationId: "111", name: null, vanityName: null }],
+      });
+      expect(await pages.list(world.companyId)).toEqual([
+        expect.objectContaining({ organizationId: "111", displayName: "urn:li:organization:111", status: "active" }),
+      ]);
+    });
   });
 });
 

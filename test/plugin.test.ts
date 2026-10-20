@@ -434,13 +434,6 @@ describe("oauth-complete route", () => {
       },
     ]);
   });
-
-  it("requires code and state", async () => {
-    expect(await route("oauth-complete", { body: {} })).toEqual({
-      status: 400,
-      body: { error: "code and state are required" },
-    });
-  });
 });
 
 describe("oauth-callback route", () => {
@@ -452,42 +445,23 @@ describe("oauth-callback route", () => {
       body: { outcome: "LinkedIn Page connected", detail: "Connected: Acme, Globex. You can close this tab." },
     });
   });
+});
 
-  it("reports a declined authorization", async () => {
-    const query = { error: "user_cancelled_login", error_description: "The user cancelled" };
-    expect(await route("oauth-callback", { query })).toEqual({
-      status: 400,
-      body: { outcome: "LinkedIn authorization was declined", detail: "user_cancelled_login: The user cancelled" },
-    });
-  });
-
-  it("reports a missing code", async () => {
-    expect(await route("oauth-callback", { query: {} })).toEqual({
-      status: 400,
-      body: { outcome: "Missing code or state", detail: "LinkedIn did not return an authorization code." },
-    });
-  });
-
-  it("reports a failed connect", async () => {
-    expect(await route("oauth-callback", { query: { code: "code-1", state: "nope" } })).toEqual({
-      status: 400,
-      body: { outcome: "Could not connect the Page", detail: "Unknown or expired OAuth state" },
-    });
-  });
-
-  it("names the developer action when LinkedIn retired the API version", async () => {
+describe("finish routes", () => {
+  it("give one status for one connect outcome", async () => {
     world.linkedin.scriptConnect([ACME]);
     world.linkedin.on("GET", ORG_ACLS_URL, () => json({ code: "NONEXISTENT_VERSION" }, 426));
-    const state = await startConnect();
+    const reason =
+      `LinkedIn retired API version ${LINKEDIN_VERSION} (organizationAcls 426: {"code":"NONEXISTENT_VERSION"}). ` +
+      "Update LINKEDIN_VERSION and release the plugin. A reconnect does not help.";
 
-    expect(await route("oauth-callback", { query: { code: "code-1", state } })).toEqual({
-      status: 400,
-      body: {
-        outcome: "Could not connect the Page",
-        detail:
-          `LinkedIn retired API version ${LINKEDIN_VERSION} (organizationAcls 426: {"code":"NONEXISTENT_VERSION"}). ` +
-          "Update LINKEDIN_VERSION and release the plugin. A reconnect does not help.",
-      },
+    expect(await route("oauth-callback", { query: { code: "code-1", state: await startConnect() } })).toEqual({
+      status: 502,
+      body: { outcome: "Could not connect the Page", detail: reason },
+    });
+    expect(await route("oauth-complete", { body: { code: "code-1", state: await startConnect() } })).toEqual({
+      status: 502,
+      body: { error: reason, kind: "linkedin_failed" },
     });
   });
 });
