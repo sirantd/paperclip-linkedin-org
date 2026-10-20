@@ -244,7 +244,7 @@ export type RouteKey = (typeof apiRoutes)[number]["routeKey"];
 const manifest = {
   id: "sirantd.linkedin-org",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "LinkedIn Page",
   description:
     "Manage a company LinkedIn Page from Paperclip. Connects Pages the authorizing member administers (OAuth, Community Management API) and lets agents publish, react and comment as the organization.",

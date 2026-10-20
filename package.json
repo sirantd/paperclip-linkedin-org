@@ -1,6 +1,6 @@
 {
   "name": "@sirantd/linkedin-org-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Manage a company LinkedIn Page from Paperclip — post, react and comment as the organization.",
   "files": ["dist/", "migrations/", "README.md"],
