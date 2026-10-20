@@ -283,6 +283,36 @@ describe("finishConnect", () => {
     );
   });
 
+  describe("OAuth state age", () => {
+    async function stateCreatedMinutesAgo(minutes: number): Promise<string> {
+      const state = await startConnect();
+      await world.ctx.state.set(
+        { scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` },
+        { createdAt: Date.now() - minutes * 60 * 1000, actorId: "operator-1" },
+      );
+      return state;
+    }
+
+    it("accepts an OAuth state younger than ten minutes", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      const state = await stateCreatedMinutesAgo(9);
+      expect(await pages.finishConnect(world.companyId, "code-1", state, "operator-1")).toHaveLength(1);
+    });
+
+    it("rejects and deletes an OAuth state older than ten minutes", async () => {
+      world.linkedin.scriptConnect([ACME]);
+      const state = await stateCreatedMinutesAgo(11);
+
+      await expect(pages.finishConnect(world.companyId, "code-1", state, "operator-1")).rejects.toThrow(
+        "Unknown or expired OAuth state",
+      );
+      expect(world.linkedin.tokenCalls()).toHaveLength(0);
+      expect(
+        world.harness.getState({ scopeKind: "company", scopeId: world.companyId, stateKey: `oauth:${state}` }),
+      ).toBeFalsy();
+    });
+  });
+
   it("rejects a grant without the organization feed scope", async () => {
     await expect(
       connect([ACME], { scope: "r_organization_social,w_organization_social,rw_organization_admin" }),

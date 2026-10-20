@@ -1,4 +1,4 @@
-import type { EnvSecretRefBinding, PluginContext } from "@paperclipai/plugin-sdk";
+import type { EnvSecretRefBinding, PluginContext, ScopeKey } from "@paperclipai/plugin-sdk";
 import { openToken, sealToken } from "./crypto.js";
 import {
   assertOrgScopesGranted,
@@ -92,6 +92,9 @@ interface PageConnectionRow {
 /** Refresh a little before actual expiry so a long-running post never races the deadline. */
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
+/** An OAuth state older than this is refused; the operator must start connect again. */
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
 export function createPageConnections(ctx: PluginContext): PageConnections {
   return {
     async actAs(companyId, organizationId) {
@@ -126,10 +129,7 @@ export function createPageConnections(ctx: PluginContext): PageConnections {
     async startConnect(companyId, operatorId) {
       const creds = await loadCredentials(ctx, companyId);
       const state = crypto.randomUUID();
-      await ctx.state.set(
-        { scopeKind: "company", scopeId: companyId, stateKey: `oauth:${state}` },
-        { createdAt: Date.now(), actorId: operatorId },
-      );
+      await ctx.state.set(oauthStateKey(companyId, state), { createdAt: Date.now(), actorId: operatorId });
       return {
         authorizationUrl: buildAuthorizationUrl({
           clientId: creds.clientId,
@@ -300,12 +300,13 @@ async function completeOAuth(
   state: string,
   actorId: string,
 ): Promise<AdministeredPage[]> {
-  const pending = await ctx.state.get({
-    scopeKind: "company",
-    scopeId: companyId,
-    stateKey: `oauth:${state}`,
-  });
+  const stateKey = oauthStateKey(companyId, state);
+  const pending = (await ctx.state.get(stateKey)) as { createdAt: number } | null;
   if (!pending) throw new Error("Unknown or expired OAuth state");
+  if (Date.now() - pending.createdAt > OAUTH_STATE_TTL_MS) {
+    await ctx.state.delete(stateKey);
+    throw new Error("Unknown or expired OAuth state");
+  }
 
   const creds = await loadCredentials(ctx, companyId);
   const tokens = await exchangeCode(ctx.http, {
@@ -374,11 +375,11 @@ async function completeOAuth(
     );
   }
 
-  await ctx.state.delete({
-    scopeKind: "company",
-    scopeId: companyId,
-    stateKey: `oauth:${state}`,
-  });
+  await ctx.state.delete(stateKey);
 
   return pages;
+}
+
+function oauthStateKey(companyId: string, state: string): ScopeKey {
+  return { scopeKind: "company", scopeId: companyId, stateKey: `oauth:${state}` };
 }
