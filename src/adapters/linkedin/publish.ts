@@ -6,6 +6,7 @@ import {
   organizationUrn,
   restHeaders,
 } from "./constants.js";
+import { LinkedInApiError } from "./errors.js";
 
 export interface PublishResult {
   postUrn: string;
@@ -49,7 +50,7 @@ export async function publishAsOrganization(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`LinkedIn publish ${res.status}: ${text.slice(0, 500)}`);
+    throw new LinkedInApiError(res.status, `LinkedIn publish ${res.status}: ${text.slice(0, 500)}`);
   }
 
   // The created post URN comes back in a header, not the body.
@@ -83,7 +84,7 @@ export async function reactAsOrganization(
   // 409/422 means the reaction already exists — that is the desired end state.
   if (res.ok || res.status === 409 || res.status === 422) return;
   const text = await res.text();
-  throw new Error(`LinkedIn react ${res.status}: ${text.slice(0, 500)}`);
+  throw new LinkedInApiError(res.status, `LinkedIn react ${res.status}: ${text.slice(0, 500)}`);
 }
 
 /** Comment on a post as the Page. */
@@ -105,7 +106,7 @@ export async function commentAsOrganization(
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`LinkedIn comment ${res.status}: ${text.slice(0, 500)}`);
+    throw new LinkedInApiError(res.status, `LinkedIn comment ${res.status}: ${text.slice(0, 500)}`);
   }
 }
 

@@ -9,6 +9,7 @@ import {
 } from "./adapters/linkedin/auth.js";
 import { listAdministeredPages, type AdministeredPage } from "./adapters/linkedin/orgs.js";
 import { LINKEDIN_ORG_SCOPES } from "./adapters/linkedin/constants.js";
+import { LinkedInApiError } from "./adapters/linkedin/errors.js";
 
 export type PageConnectionStatus = "active" | "expired" | "revoked";
 
@@ -40,10 +41,15 @@ export interface PageSummary {
  */
 export interface PageConnections {
   /**
-   * Choose the acting Page and return it with a fresh access token. The Page
-   * is the named one, else the default Page, else the only active Page.
+   * Choose the acting Page and run `work` as it with a fresh access token. The
+   * Page is the named one, else the default Page, else the only active Page.
+   * If LinkedIn rejects the token (401), the Page connection becomes expired.
    */
-  actAs(companyId: string, organizationId?: string): Promise<ActingPage>;
+  actAs<T>(
+    companyId: string,
+    organizationId: string | undefined,
+    work: (page: ActingPage) => Promise<T>,
+  ): Promise<T>;
   /** Every Page connection of the company, in any status, by name with unnamed Pages last. */
   list(companyId: string): Promise<PageSummary[]>;
   /** Begin connect: remember an OAuth state and return the LinkedIn authorization URL. */
@@ -96,17 +102,28 @@ const REFRESH_SKEW_MS = 5 * 60 * 1000;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 export function createPageConnections(ctx: PluginContext): PageConnections {
+  /** The refresh in progress for each Page connection, by row id; concurrent calls share it. */
+  const refreshes = new Map<string, Promise<string>>();
+
   return {
-    async actAs(companyId, organizationId) {
+    async actAs(companyId, organizationId, work) {
       const creds = await loadCredentials(ctx, companyId);
       const row = await findConnection(ctx, companyId, organizationId ?? creds.defaultOrganizationId);
-      const accessToken = await accessTokenFor(ctx, companyId, creds, row);
-      return {
-        organizationId: row.organization_id,
-        organizationUrn: row.organization_urn,
-        displayName: row.page_name ?? row.organization_urn,
-        accessToken,
-      };
+      const accessToken = await accessTokenFor(ctx, companyId, creds, row, refreshes);
+      try {
+        return await work({
+          organizationId: row.organization_id,
+          organizationUrn: row.organization_urn,
+          displayName: row.page_name ?? row.organization_urn,
+          accessToken,
+        });
+      } catch (err) {
+        if (!(err instanceof LinkedInApiError && err.status === 401)) throw err;
+        await markExpired(ctx, row.id);
+        throw new Error(
+          `LinkedIn rejected the token for Page ${row.organization_id} (${err.message}). Reconnect the Page in Settings.`,
+        );
+      }
     },
 
     async list(companyId) {
@@ -232,12 +249,28 @@ async function accessTokenFor(
   companyId: string,
   creds: Credentials,
   row: PageConnectionRow,
+  refreshes: Map<string, Promise<string>>,
 ): Promise<string> {
   const expiresAt = new Date(row.expires_at).getTime();
   if (Date.now() < expiresAt - REFRESH_SKEW_MS) {
     return openToken(row.access_token_sealed, creds.dek);
   }
 
+  // Two refreshes of one Page connection would race to store their tokens.
+  let refresh = refreshes.get(row.id);
+  if (!refresh) {
+    refresh = refreshAccessToken(ctx, companyId, creds, row).finally(() => refreshes.delete(row.id));
+    refreshes.set(row.id, refresh);
+  }
+  return refresh;
+}
+
+async function refreshAccessToken(
+  ctx: PluginContext,
+  companyId: string,
+  creds: Credentials,
+  row: PageConnectionRow,
+): Promise<string> {
   if (!row.refresh_token_sealed) {
     await markExpired(ctx, row.id);
     throw new Error(

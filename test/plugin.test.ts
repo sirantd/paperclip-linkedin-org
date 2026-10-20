@@ -8,6 +8,7 @@ import {
   GLOBEX,
   POSTS_URL,
   REACTIONS_URL,
+  json,
   routeInput,
   wire,
   createWorld,
@@ -91,6 +92,19 @@ describe("linkedin-page-post", () => {
         "or set a default Page in the plugin settings.",
     });
     expect(world.linkedin.requestsTo(POSTS_URL)).toHaveLength(0);
+  });
+
+  it("expires the Page connection when LinkedIn rejects the token", async () => {
+    await connect([ACME]);
+    world.linkedin.on("POST", POSTS_URL, () => json({ code: "REVOKED_ACCESS_TOKEN" }, 401));
+
+    expect(await tool("linkedin-page-post", { text: "Hi" })).toEqual({
+      error:
+        'LinkedIn rejected the token for Page 111 (LinkedIn publish 401: {"code":"REVOKED_ACCESS_TOKEN"}). ' +
+        "Reconnect the Page in Settings.",
+    });
+    expect(await listPages()).toEqual([expect.objectContaining({ organization_id: "111", status: "expired" })]);
+    expect(world.harness.activity).toEqual([]);
   });
 });
 

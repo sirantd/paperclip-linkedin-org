@@ -80,29 +80,30 @@ const plugin = definePlugin({
       async (params, run) => {
         const p = params as { text: string; organizationId?: string; visibility?: "PUBLIC" | "LOGGED_IN" };
         try {
-          const page = await pages.actAs(run.companyId, p.organizationId);
-          const result = await publishAsOrganization(ctx.http, {
-            accessToken: page.accessToken,
-            organizationId: page.organizationId,
-            text: p.text,
-            visibility: p.visibility,
-          });
-          await ctx.activity.log({
-            companyId: run.companyId,
-            message: `Posted as ${page.displayName}`,
-            entityType: "linkedin_page_post",
-            entityId: result.postUrn,
-            metadata: {
-              postUrn: result.postUrn,
+          return await pages.actAs(run.companyId, p.organizationId, async (page) => {
+            const result = await publishAsOrganization(ctx.http, {
+              accessToken: page.accessToken,
               organizationId: page.organizationId,
-              agentId: run.agentId,
-              runId: run.runId,
-            },
+              text: p.text,
+              visibility: p.visibility,
+            });
+            await ctx.activity.log({
+              companyId: run.companyId,
+              message: `Posted as ${page.displayName}`,
+              entityType: "linkedin_page_post",
+              entityId: result.postUrn,
+              metadata: {
+                postUrn: result.postUrn,
+                organizationId: page.organizationId,
+                agentId: run.agentId,
+                runId: run.runId,
+              },
+            });
+            return {
+              content: `Published as ${page.displayName}: ${result.permalink ?? result.postUrn}`,
+              data: result,
+            };
           });
-          return {
-            content: `Published as ${page.displayName}: ${result.permalink ?? result.postUrn}`,
-            data: result,
-          };
         } catch (err) {
           return { error: (err as Error).message };
         }
@@ -131,14 +132,15 @@ const plugin = definePlugin({
       async (params, run) => {
         const p = params as { postUrn: string; organizationId?: string; reactionType?: never };
         try {
-          const page = await pages.actAs(run.companyId, p.organizationId);
-          await reactAsOrganization(ctx.http, {
-            accessToken: page.accessToken,
-            organizationId: page.organizationId,
-            postUrn: p.postUrn,
-            reactionType: p.reactionType,
+          return await pages.actAs(run.companyId, p.organizationId, async (page) => {
+            await reactAsOrganization(ctx.http, {
+              accessToken: page.accessToken,
+              organizationId: page.organizationId,
+              postUrn: p.postUrn,
+              reactionType: p.reactionType,
+            });
+            return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
           });
-          return { content: `Reacted to ${p.postUrn} as ${page.displayName}.` };
         } catch (err) {
           return { error: (err as Error).message };
         }
@@ -163,14 +165,15 @@ const plugin = definePlugin({
       async (params, run) => {
         const p = params as { postUrn: string; text: string; organizationId?: string };
         try {
-          const page = await pages.actAs(run.companyId, p.organizationId);
-          await commentAsOrganization(ctx.http, {
-            accessToken: page.accessToken,
-            organizationId: page.organizationId,
-            postUrn: p.postUrn,
-            text: p.text,
+          return await pages.actAs(run.companyId, p.organizationId, async (page) => {
+            await commentAsOrganization(ctx.http, {
+              accessToken: page.accessToken,
+              organizationId: page.organizationId,
+              postUrn: p.postUrn,
+              text: p.text,
+            });
+            return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
           });
-          return { content: `Commented on ${p.postUrn} as ${page.displayName}.` };
         } catch (err) {
           return { error: (err as Error).message };
         }
