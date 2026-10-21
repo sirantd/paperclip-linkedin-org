@@ -5,6 +5,7 @@ import {
   LINKEDIN_IMAGES_URL,
   LINKEDIN_POSTS_URL,
   LINKEDIN_REACTIONS_URL,
+  LINKEDIN_SHARE_STATS_URL,
   restHeaders,
 } from "./constants.js";
 import { apiError } from "./errors.js";
@@ -39,6 +40,28 @@ export interface ReactResult {
   reactionType: ReactionType;
 }
 
+/** Organic lifetime counts of one post, as organizationalEntityShareStatistics reports them. */
+export interface PostStatistics {
+  postUrn: string;
+  /** Creation time (ISO 8601) when the post came from the author finder, else null. */
+  createdAt: string | null;
+  /** The first 120 characters of the post text when the post came from the author finder, else null. */
+  textStart: string | null;
+  impressionCount: number;
+  uniqueImpressionsCount: number | null;
+  clickCount: number;
+  likeCount: number;
+  commentCount: number;
+  shareCount: number;
+  /** (clicks + likes + comments + shares) / impressions, as LinkedIn computes it. */
+  engagement: number;
+}
+
+/** The most posts that one statistics call reads. */
+export const MAX_STATS_POSTS = 50;
+
+const STATS_URN = /^urn:li:(share|ugcPost):\d+$/;
+
 export interface CommentResult {
   /** The URN of the created comment, or null when LinkedIn returned none. */
   commentUrn: string | null;
@@ -67,6 +90,13 @@ export interface PageCalls {
    * DOCX, PPT or PPTX document. LinkedIn processes it after the upload.
    */
   upload(file: { contentType: string; bytes: Uint8Array<ArrayBuffer> }): Promise<UploadedMedia>;
+  /**
+   * Read the organic lifetime statistics (impressions, clicks, reactions,
+   * comments, reposts) of posts by the Page. With `postUrns` it reads those
+   * posts; without, the `count` latest posts by the Page (newest first). A post
+   * that LinkedIn leaves out of the answer has no activity and counts 0.
+   */
+  stats(input: { postUrns?: string[]; count?: number }): Promise<PostStatistics[]>;
 }
 
 /**
@@ -102,12 +132,15 @@ export function linkedInPage(
    */
   async function rest(
     call: string,
-    request: { method: "GET" | "POST"; url: string; body?: unknown },
+    request: { method: "GET" | "POST"; url: string; body?: unknown; restliMethod?: "FINDER" },
     alsoDone: readonly number[] = [],
   ): Promise<Response> {
     const res = await http.fetch(request.url, {
       method: request.method,
-      headers: restHeaders(accessToken),
+      headers: {
+        ...restHeaders(accessToken),
+        ...(request.restliMethod && { "X-RestLi-Method": request.restliMethod }),
+      },
       ...(request.body !== undefined && { body: JSON.stringify(request.body) }),
     });
     if (!res.ok && !alsoDone.includes(res.status)) throw await apiError(res, call);
@@ -218,6 +251,84 @@ export function linkedInPage(
       // with the file needs the same read, so retrying the upload is the fix.
       const { status } = await mediaState(kind, mediaUrn);
       return { mediaUrn, status, kind };
+    },
+
+    async stats({ postUrns, count }) {
+      // Which posts: the named ones, or the latest posts by the Page (r_organization_social).
+      let posts: Array<{ postUrn: string; createdAt: string | null; textStart: string | null }>;
+      if (postUrns && postUrns.length > 0) {
+        const unique = [...new Set(postUrns.map((u) => u.trim()))];
+        const bad = unique.filter((u) => !STATS_URN.test(u));
+        if (bad.length > 0) {
+          throw new Error(
+            `${bad.join(", ")} is not a post URN. Pass urn:li:share:… or urn:li:ugcPost:…, as linkedin-page-post returned it.`,
+          );
+        }
+        if (unique.length > MAX_STATS_POSTS) {
+          throw new Error(`Pass ${MAX_STATS_POSTS} post URNs or fewer in one call.`);
+        }
+        posts = unique.map((postUrn) => ({ postUrn, createdAt: null, textStart: null }));
+      } else {
+        const n = Math.min(Math.max(Math.trunc(count ?? 10), 1), MAX_STATS_POSTS);
+        const res = await rest("LinkedIn posts by Page", {
+          method: "GET",
+          url: `${LINKEDIN_POSTS_URL}?q=author&author=${encodeURIComponent(organizationUrn)}&count=${n}&sortBy=CREATED`,
+          restliMethod: "FINDER",
+        });
+        const body = (await res.json()) as {
+          elements?: Array<{ id?: string; createdAt?: number; publishedAt?: number; commentary?: string }>;
+        };
+        posts = (body.elements ?? [])
+          .filter((e): e is typeof e & { id: string } => typeof e.id === "string" && STATS_URN.test(e.id))
+          .map((e) => {
+            const at = e.publishedAt ?? e.createdAt;
+            return {
+              postUrn: e.id,
+              createdAt: typeof at === "number" ? new Date(at).toISOString() : null,
+              textStart: typeof e.commentary === "string" ? e.commentary.slice(0, 120) : null,
+            };
+          });
+      }
+      if (posts.length === 0) return [];
+
+      // One statistics call for each URN kind: the endpoint takes `shares` and `ugcPosts` apart.
+      const counts = new Map<string, Record<string, unknown>>();
+      for (const [kind, param] of [["share", "shares"], ["ugcPost", "ugcPosts"]] as const) {
+        const urns = posts.map((p) => p.postUrn).filter((u) => u.startsWith(`urn:li:${kind}:`));
+        if (urns.length === 0) continue;
+        const res = await rest("LinkedIn post statistics", {
+          method: "GET",
+          url:
+            `${LINKEDIN_SHARE_STATS_URL}?q=organizationalEntity&organizationalEntity=${encodeURIComponent(organizationUrn)}` +
+            `&${param}=List(${urns.map(encodeURIComponent).join(",")})`,
+        });
+        const body = (await res.json()) as {
+          elements?: Array<{ share?: string; ugcPost?: string; totalShareStatistics?: Record<string, unknown> }>;
+        };
+        for (const e of body.elements ?? []) {
+          const urn = e.share ?? e.ugcPost;
+          if (urn && e.totalShareStatistics) counts.set(urn, e.totalShareStatistics);
+        }
+      }
+
+      const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+      return posts.map(({ postUrn, createdAt, textStart }) => {
+        const s = counts.get(postUrn) ?? {};
+        // LinkedIn has spelled the unique count both ways (uniqueImpressionsCount/-Counts).
+        const unique = s.uniqueImpressionsCount ?? s.uniqueImpressionsCounts;
+        return {
+          postUrn,
+          createdAt,
+          textStart,
+          impressionCount: num(s.impressionCount),
+          uniqueImpressionsCount: typeof unique === "number" ? unique : null,
+          clickCount: num(s.clickCount),
+          likeCount: num(s.likeCount),
+          commentCount: num(s.commentCount),
+          shareCount: num(s.shareCount),
+          engagement: num(s.engagement),
+        };
+      });
     },
   };
 }

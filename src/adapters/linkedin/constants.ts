@@ -37,6 +37,7 @@ export const LINKEDIN_IMAGES_URL = "https://api.linkedin.com/rest/images";
 export const LINKEDIN_DOCUMENTS_URL = "https://api.linkedin.com/rest/documents";
 export const LINKEDIN_ORG_ACLS_URL = "https://api.linkedin.com/rest/organizationAcls";
 export const LINKEDIN_ORGS_URL = "https://api.linkedin.com/rest/organizations";
+export const LINKEDIN_SHARE_STATS_URL = "https://api.linkedin.com/rest/organizationalEntityShareStatistics";
 
 /** Headers required on every versioned REST call. */
 export function restHeaders(accessToken: string): Record<string, string> {

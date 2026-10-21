@@ -23,16 +23,18 @@ scope that the action needs, and tells the operator to reconnect the Page.
 
 | Scope | Needed for |
 |---|---|
-| `r_organization_social` | none |
+| `r_organization_social` | stats |
 | `w_organization_social` | post, react, comment, upload |
 | `r_organization_social_feed` | none |
 | `w_organization_social_feed` | react, comment |
-| `rw_organization_admin` | connect |
+| `rw_organization_admin` | connect, stats |
 
 Connect uses `rw_organization_admin` to list the Pages that the authorizing
-member administers. No step needs the two `r_` scopes. The live test of
-2026-09-29 added them together with the feed scopes, so it does not show that
-react and comment work without them.
+member administers. Stats uses `r_organization_social` to find the latest posts
+by the Page and `rw_organization_admin` to read their statistics. No step needs
+`r_organization_social_feed`. The live test of 2026-09-29 added it together
+with `w_organization_social_feed`, so it does not show that react and comment
+work without it.
 
 No `openid`/`profile`/`email`: those belong to Sign In with LinkedIn, a separate
 product. Requesting them from a Community-Management-only app fails the whole
@@ -104,6 +106,7 @@ connect again.
 | `linkedin-page-post` | Publish a post authored by the Page, with an optional uploaded image or document. |
 | `linkedin-page-react` | React to a post as the Page. |
 | `linkedin-page-comment` | Comment on a post as the Page. |
+| `linkedin-page-stats` | Read the organic lifetime statistics of posts by the Page: impressions, unique impressions, clicks, likes, comments, reposts and engagement. Read-only. |
 
 The `organizationId` parameter takes the organization id (`12345`) or the
 Organization URN (`urn:li:organization:12345`).
@@ -123,6 +126,25 @@ do the action again.
 | `linkedin-page-post` | `linkedin_page_post` | The post URN. |
 | `linkedin-page-react` | `linkedin_page_reaction` | The reaction URN, or the post URN if LinkedIn returns no reaction URN. A reaction that exists already returns none. |
 | `linkedin-page-comment` | `linkedin_page_comment` | The comment URN, or the post URN if LinkedIn returns no comment URN. |
+
+`linkedin-page-stats` changes nothing on LinkedIn, so it writes no activity
+entry.
+
+### Post statistics
+
+`linkedin-page-stats` takes `postUrns` (up to 50 `urn:li:share:…` or
+`urn:li:ugcPost:…`) or, without them, reads the `count` latest posts by the
+Page (default 10, at most 50) with the Posts API author finder. It reads the
+counts from `organizationalEntityShareStatistics`, one call for shares and one
+for UGC posts. The counts are organic and lifetime; LinkedIn keeps them for 12
+months. LinkedIn leaves a post with no activity out of its answer, and the tool
+reports that post with zero counts.
+
+Connect does not require `r_organization_social`, so a grant without it still
+connects; only stats refuses that Page connection.
+
+**Unverified:** a live call. The response shape follows the LinkedIn docs for
+version 202608.
 
 ### Images and documents
 

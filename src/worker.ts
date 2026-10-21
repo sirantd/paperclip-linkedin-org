@@ -214,6 +214,31 @@ export function createPlugin(fileTransport?: FileTransport) {
         };
       });
 
+      // Read-only: no activity entry, since nothing changed on LinkedIn.
+      ctx.tools.register("linkedin-page-stats", declared("linkedin-page-stats"), async (params, run) => {
+        const p = params as ToolParams<"linkedin-page-stats">;
+        try {
+          return await pages.actAs(run.companyId, p.organizationId, "stats", async (page) => {
+            const rows = await page.stats({ postUrns: p.postUrns, count: p.count });
+            const content = rows.length
+              ? [
+                  `Post statistics for ${page.displayName} (organic, lifetime):`,
+                  ...rows.map(
+                    (r) =>
+                      `${r.postUrn}${r.createdAt ? ` (${r.createdAt.slice(0, 10)})` : ""}: ` +
+                      `${r.impressionCount} impressions, ${r.clickCount} clicks, ${r.likeCount} likes, ` +
+                      `${r.commentCount} comments, ${r.shareCount} reposts, ` +
+                      `engagement ${(r.engagement * 100).toFixed(2)}%`,
+                  ),
+                ].join("\n")
+              : `${page.displayName} has no posts to report.`;
+            return { content, data: { organizationId: page.organizationId, posts: rows } };
+          });
+        } catch (err) {
+          return { error: (err as Error).message };
+        }
+      });
+
       pageTool("react", async (page, p) => {
         const { reactionUrn, reactionType } = await page.react(p.postUrn, p.reactionType);
         return {

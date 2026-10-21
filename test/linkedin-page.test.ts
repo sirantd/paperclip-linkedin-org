@@ -8,6 +8,7 @@ import {
   IMAGES_URL,
   POSTS_URL,
   REACTIONS_URL,
+  SHARE_STATS_URL,
   UPLOAD_URL,
   hostHttp,
   json,
@@ -222,5 +223,82 @@ describe("upload", () => {
       'LinkedIn image status 503: {"message":"Service Unavailable"}',
     );
     expect(linkedin.requestsTo(UPLOAD_URL)).toHaveLength(1);
+  });
+});
+
+describe("stats", () => {
+  const COUNTS = { impressionCount: 500, uniqueImpressionsCount: 320, clickCount: 12, likeCount: 7, commentCount: 2, shareCount: 1, engagement: 0.044 };
+
+  it("reads the latest posts by the Page, then their statistics, and counts a silent post as 0", async () => {
+    linkedin.scriptStats(
+      [
+        { id: "urn:li:share:2", createdAt: Date.UTC(2026, 9, 20), commentary: "Second post" },
+        { id: "urn:li:ugcPost:1", createdAt: Date.UTC(2026, 9, 19), commentary: "First post" },
+        { id: "urn:li:share:3" },
+      ],
+      { "urn:li:share:2": COUNTS, "urn:li:ugcPost:1": { impressionCount: 40, clickCount: 1, engagement: 0.025 } },
+    );
+
+    const rows = await page.stats({ count: 3 });
+
+    expect(rows).toEqual([
+      { postUrn: "urn:li:share:2", createdAt: "2026-10-20T00:00:00.000Z", textStart: "Second post", ...COUNTS },
+      {
+        postUrn: "urn:li:ugcPost:1",
+        createdAt: "2026-10-19T00:00:00.000Z",
+        textStart: "First post",
+        impressionCount: 40,
+        uniqueImpressionsCount: null,
+        clickCount: 1,
+        likeCount: 0,
+        commentCount: 0,
+        shareCount: 0,
+        engagement: 0.025,
+      },
+      {
+        postUrn: "urn:li:share:3",
+        createdAt: null,
+        textStart: null,
+        impressionCount: 0,
+        uniqueImpressionsCount: null,
+        clickCount: 0,
+        likeCount: 0,
+        commentCount: 0,
+        shareCount: 0,
+        engagement: 0,
+      },
+    ]);
+    const [finder] = linkedin.requestsTo(`${POSTS_URL}?`);
+    expect(finder!.url.searchParams.get("q")).toBe("author");
+    expect(finder!.url.searchParams.get("author")).toBe("urn:li:organization:111");
+    expect(finder!.url.searchParams.get("count")).toBe("3");
+    expect(finder!.headers).toMatchObject({ "X-RestLi-Method": "FINDER", "LinkedIn-Version": LINKEDIN_VERSION });
+    const stats = linkedin.requestsTo(SHARE_STATS_URL);
+    expect(stats.map((r) => [r.url.searchParams.get("shares"), r.url.searchParams.get("ugcPosts")])).toEqual([
+      ["List(urn:li:share:2,urn:li:share:3)", null],
+      [null, "List(urn:li:ugcPost:1)"],
+    ]);
+    expect(stats[0]!.url.searchParams.get("organizationalEntity")).toBe("urn:li:organization:111");
+  });
+
+  it("reads named posts without the finder", async () => {
+    linkedin.scriptStats([], { "urn:li:share:9": COUNTS });
+
+    const rows = await page.stats({ postUrns: ["urn:li:share:9", "urn:li:share:9"] });
+
+    expect(rows).toEqual([{ postUrn: "urn:li:share:9", createdAt: null, textStart: null, ...COUNTS }]);
+    expect(linkedin.requestsTo(`${POSTS_URL}?`)).toHaveLength(0);
+  });
+
+  it("refuses a URN that is not a post before any LinkedIn call", async () => {
+    await expect(page.stats({ postUrns: ["urn:li:image:1"] })).rejects.toThrow(/urn:li:image:1 is not a post URN/);
+    expect(linkedin.requests).toHaveLength(0);
+  });
+
+  it("asks LinkedIn for at most 50 latest posts", async () => {
+    linkedin.scriptStats([], {});
+    expect(await page.stats({ count: 500 })).toEqual([]);
+    expect(linkedin.requestsTo(`${POSTS_URL}?`)[0]!.url.searchParams.get("count")).toBe("50");
+    expect(linkedin.requestsTo(SHARE_STATS_URL)).toHaveLength(0);
   });
 });
