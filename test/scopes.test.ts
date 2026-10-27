@@ -32,7 +32,7 @@ describe("grantedScopes", () => {
 
 describe("missingScopes", () => {
   it("finds nothing missing in a full grant", () => {
-    for (const action of ["post", "react", "comment", "upload"] as const) {
+    for (const action of ["post", "react", "comment", "upload", "stats"] as const) {
       expect(missingScopes(REQUESTED_SCOPES, action)).toEqual([]);
     }
   });
@@ -42,6 +42,11 @@ describe("missingScopes", () => {
     expect(missingScopes(BEFORE_FEED_SCOPES, "upload")).toEqual([]);
     expect(missingScopes(BEFORE_FEED_SCOPES, "react")).toEqual(["w_organization_social_feed"]);
     expect(missingScopes(BEFORE_FEED_SCOPES, "comment")).toEqual(["w_organization_social_feed"]);
+  });
+
+  it("lets a Page connected before the feed scopes read stats, since r_organization_social was always requested", () => {
+    expect(missingScopes(BEFORE_FEED_SCOPES, "stats")).toEqual([]);
+    expect(missingScopes(["w_organization_social", "rw_organization_admin"], "stats")).toEqual(["r_organization_social"]);
   });
 });
 

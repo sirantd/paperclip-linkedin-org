@@ -5,6 +5,7 @@ import type {
   PluginToolDeclaration,
 } from "@paperclipai/plugin-sdk";
 import { ACCEPTED_FILES, MAX_MEDIA_BYTES } from "./adapters/linkedin/media.js";
+import { MAX_STATS_POSTS } from "./adapters/linkedin/page.js";
 import type { FromSchema } from "./json-schema.js";
 
 /**
@@ -177,6 +178,30 @@ const tools = [
       properties: {
         postUrn: { type: "string" },
         text: { type: "string" },
+        organizationId: organizationIdParam,
+      },
+    },
+  },
+  {
+    name: "linkedin-page-stats",
+    displayName: "LinkedIn Page post statistics",
+    description:
+      "Read the organic lifetime statistics of posts by the company LinkedIn Page: impressions, unique " +
+      "impressions, clicks, likes, comments, reposts and engagement rate. Pass postUrns (from " +
+      "linkedin-page-post) to read those posts, or omit them to read the latest posts by the Page. " +
+      "Read-only: nothing is published. LinkedIn keeps these counts for 12 months.",
+    parametersSchema: {
+      type: "object",
+      properties: {
+        postUrns: {
+          type: "array",
+          items: { type: "string" },
+          description: `Optional. Up to ${MAX_STATS_POSTS} urn:li:share:… or urn:li:ugcPost:… URNs of posts by the Page.`,
+        },
+        count: {
+          type: "integer",
+          description: `Optional, without postUrns. How many of the latest posts to read, 1 to ${MAX_STATS_POSTS}. Default 10.`,
+        },
         organizationId: organizationIdParam,
       },
     },

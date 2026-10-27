@@ -21,6 +21,7 @@ export const COMMENTS_URL = "https://api.linkedin.com/rest/socialActions";
 export const IMAGES_URL = "https://api.linkedin.com/rest/images";
 export const DOCUMENTS_URL = "https://api.linkedin.com/rest/documents";
 export const UPLOAD_URL = "https://www.linkedin.com/dms-uploads/";
+export const SHARE_STATS_URL = "https://api.linkedin.com/rest/organizationalEntityShareStatistics";
 
 /** LinkedIn tokens live 60 days; one minute falls inside the refresh skew. */
 export const SIXTY_DAYS_S = 60 * 24 * 60 * 60;
@@ -154,6 +155,33 @@ export class FakeLinkedIn {
         JSON.stringify({ actor, object, message, id: "1", commentUrn: `urn:li:comment:(${object},1)` }),
         { status: 201, headers: { "Content-Type": "application/json", "x-restli-id": "1" } },
       );
+    });
+  }
+
+  /**
+   * Answer the post finder with `posts` (newest first) and the statistics
+   * call with `counts` by post URN. A post with no entry in `counts` is left
+   * out of the statistics answer, as LinkedIn leaves out a post with no activity.
+   */
+  scriptStats(
+    posts: Array<{ id: string; createdAt?: number; commentary?: string }>,
+    counts: Record<string, Record<string, number>>,
+  ): void {
+    this.on("GET", `${POSTS_URL}?`, () => json({ paging: { start: 0, count: posts.length }, elements: posts }));
+    this.on("GET", SHARE_STATS_URL, (req) => {
+      const list = (param: string) =>
+        /^List\((.*)\)$/.exec(req.url.searchParams.get(param) ?? "")?.[1]?.split(",").map(decodeURIComponent) ?? [];
+      const elements = [
+        ...list("shares").map((urn) => ({ share: urn })),
+        ...list("ugcPosts").map((urn) => ({ ugcPost: urn })),
+      ]
+        .filter((e) => counts[(e as { share?: string }).share ?? (e as { ugcPost?: string }).ugcPost!])
+        .map((e) => ({
+          organizationalEntity: req.url.searchParams.get("organizationalEntity"),
+          ...e,
+          totalShareStatistics: counts[(e as { share?: string }).share ?? (e as { ugcPost?: string }).ugcPost!],
+        }));
+      return json({ paging: { count: 10, start: 0, links: [] }, elements });
     });
   }
 

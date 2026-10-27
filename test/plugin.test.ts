@@ -14,6 +14,7 @@ import {
   ORG_ACLS_URL,
   POSTS_URL,
   REACTIONS_URL,
+  SHARE_STATS_URL,
   TOKEN_URL,
   UPLOAD_URL,
   json,
@@ -131,6 +132,7 @@ describe("agent tools", () => {
       "w_organization_social, w_organization_social_feed",
       { postUrn: "urn:li:share:1", text: "Nice" },
     ],
+    ["linkedin-page-stats", "stats", "r_organization_social", {}],
   ] as const)("%s checks the scopes of %s before any other step", async (name, action, missing, params) => {
     await connect([ACME]);
     await world.sql(`update ${world.ctx.db.namespace}.page_connections set scopes = '{rw_organization_admin}'`);
@@ -463,6 +465,39 @@ describe("linkedin-page-comment", () => {
     expect(result).toEqual({ content: "Commented on urn:li:share:1 as Acme." });
     const [req] = world.linkedin.requestsTo(COMMENTS_URL);
     expect(JSON.parse(req!.body)).toMatchObject({ object: "urn:li:share:1", message: { text: "Nice" } });
+  });
+});
+
+describe("linkedin-page-stats", () => {
+  it("reports the statistics of the latest posts as text and data, and writes no activity entry", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptStats(
+      [{ id: "urn:li:share:9", createdAt: Date.UTC(2026, 9, 20), commentary: "Cost review" }],
+      { "urn:li:share:9": { impressionCount: 812, clickCount: 23, likeCount: 9, commentCount: 1, shareCount: 2, engagement: 0.0431 } },
+    );
+
+    const result = wire(await tool("linkedin-page-stats", { count: 5 })) as { content: string; data: { posts: unknown[] } };
+
+    expect(result.content).toBe(
+      "Post statistics for Acme (organic, lifetime):\n" +
+        "urn:li:share:9 (2026-10-20): 812 impressions, 23 clicks, 9 likes, 1 comments, 2 reposts, engagement 4.31%",
+    );
+    expect(result.data).toEqual({
+      organizationId: "111",
+      posts: [expect.objectContaining({ postUrn: "urn:li:share:9", impressionCount: 812, clickCount: 23 })],
+    });
+    expect(world.linkedin.requestsTo(SHARE_STATS_URL)).toHaveLength(1);
+    expect(world.harness.activity).toEqual([]);
+  });
+
+  it("returns a refused statistics read as a tool error", async () => {
+    await connect([ACME]);
+    world.linkedin.scriptStats([{ id: "urn:li:share:9" }], {});
+    world.linkedin.on("GET", SHARE_STATS_URL, () => json({ code: "ACCESS_DENIED" }, 403));
+
+    expect(await tool("linkedin-page-stats", {})).toEqual({
+      error: expect.stringMatching(/^LinkedIn refused stats as Page 111 \(LinkedIn post statistics 403: /),
+    });
   });
 });
 
